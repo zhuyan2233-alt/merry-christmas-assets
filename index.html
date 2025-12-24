@@ -1,0 +1,663 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Luminous Ephemera - Gesture Control</title>
+    <style>
+        body { margin: 0; background: #010103; overflow: hidden; font-family: sans-serif; }
+        canvas { display: block; }
+        #hud {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: rgba(0, 0, 0, 0.45);
+            color: #e0e0e0;
+            padding: 12px 16px;
+            border-radius: 6px;
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+            line-height: 1.6;
+            pointer-events: none;
+            backdrop-filter: blur(4px);
+        }
+        #video { display: none; }
+    </style>
+</head>
+<body>
+    <canvas id="main-canvas"></canvas>
+    <div id="hud"></div>
+    <video id="video" autoplay playsinline></video>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+        import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+        import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+        import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+
+        const ENTIRE_SCENE = 0;
+        const BLOOM_SCENE = 1;
+
+        const CONFIG = {
+            totalParticles: 80000, 
+            treeHeight: 12.0,
+            baseRadius: 4.5,
+            treeSpeed: 0.0006, 
+            rotationMultiplier: 3.0, 
+            colors: {
+                volume: new THREE.Color(0xFFD6EA),
+                surface: new THREE.Color(0xFFE6F2),
+                crown: new THREE.Color(0xFFF3FA),
+                sparkle: new THREE.Color(0xF0F8FF), 
+                energy: new THREE.Color(0xe0f7ff),
+                starCore: new THREE.Color(0xf8faff),
+                blueDust: new THREE.Color(0xDDEEFF),  
+                starTint: new THREE.Color(0xffe4ec),
+                starEdge: new THREE.Color(0xe0f7ff)
+            },
+            expand: {
+                lerpSpeed: 0.03,
+                offsetX: -0.35,
+                boxMin: new THREE.Vector3(-18, -8, 2),
+                boxMax: new THREE.Vector3(18, 18, 20)
+            },
+            snow: {
+                count: 1100,
+                size: 6.0,
+                baseOpacity: 0.6,
+                fallSpeed: { min: 0.6, max: 1.4 },
+                driftAmount: 0.015,
+                fadeInSpeed: 0.015,
+                fadeOutSpeed: 0.012,
+                yMin: -3,
+                yMax: 18
+            },
+            gesture: {
+                stableWindowOpen: 450,
+                stableWindowDual: 650,
+                cooldown: 600,
+                snowHoldDuration: 5000
+            }
+        };
+
+        const vertexShader = `
+            attribute vec3 color;
+            attribute float layerId;
+            attribute float brightness;
+            attribute float aSeed; 
+            attribute vec3 spiralData;
+            attribute vec3 aExpandPos;
+            varying vec3 vColor;
+            varying float vAlpha;
+            uniform float uTime;
+            uniform float uSize;
+            uniform float uSpiralRotation;
+            uniform float uExpand;
+
+            void main() {
+                vColor = color;
+                vec3 pos = position;
+                float sizeScale = 1.0;
+                float hProgress = pos.y / 12.0;
+
+                if(layerId == 6.0) {
+                    pos.x += sin(uTime * 0.2 + aSeed * 6.28) * 0.5;
+                    pos.z += cos(uTime * 0.2 + aSeed * 6.28) * 0.5;
+                    pos.y += sin(uTime * 0.1 + aSeed * 10.0) * 0.3;
+                }
+
+                if(layerId < 3.0 || layerId == 5.0 || layerId == 6.0) { 
+                    float noise = sin(uTime * 0.5 + pos.y) * 0.05;
+                    pos.x += noise;
+                    pos.z += noise;
+                    float alphaBoost = (layerId == 2.0) ? 0.35 : 1.0;
+                    
+                    if(layerId == 5.0) {
+                        sizeScale = 0.98;
+                        float freq = (0.8 + aSeed * 1.5) * 0.5;
+                        float phase = aSeed * 6.28;
+                        float cycle = sin(uTime * freq + phase);
+                        float gate = smoothstep(0.75, 0.95, cycle); 
+                        float shimmer = 0.85 + 0.15 * sin(uTime * 5.0 + phase);
+                        alphaBoost = gate * shimmer;
+                        float sparkleFade = smoothstep(1.0, 0.94, hProgress);
+                        alphaBoost *= mix(0.70, 1.0, sparkleFade); 
+                        vAlpha = clamp(brightness + 0.2, 0.0, 1.0) * 0.95 * alphaBoost;
+                    } 
+                    else if(layerId == 6.0) { 
+                        sizeScale = 0.72;
+                        vAlpha = brightness * 0.42;
+                    }
+                 
+                    else {
+                        float treeFade = smoothstep(1.0, 0.94, hProgress);
+                        alphaBoost *= mix(0.80, 1.0, treeFade);
+                        vAlpha = brightness * 0.65 * alphaBoost;
+                    }
+                    if(layerId == 2.0) sizeScale = 0.7;
+                } 
+                else if(layerId == 3.0) {
+                    float h = fract(spiralData.x + uTime * 0.012);
+                    pos.y = h * 12.0;
+                    float treeRadius = (1.0 - h) * 4.5;
+                    float angle = (h * 3.14159 * 2.0 * 3.5) + uSpiralRotation;
+                    float dr_dy = -0.375;
+                    vec3 n = normalize(vec3(cos(angle), -dr_dy, sin(angle)));
+                    vec3 t = vec3(-sin(angle), 0.0, cos(angle));
+                    pos.x = cos(angle) * (treeRadius + mix(1.2, 0.4, h));
+                    pos.z = sin(angle) * (treeRadius + mix(1.2, 0.4, h));
+                    pos += n * spiralData.y * 2.0 + t * spiralData.z * 2.0;
+                    vAlpha = brightness * smoothstep(0.0, 0.1, h) * smoothstep(1.0, 0.9, h) * 0.95;
+                    sizeScale = 0.65;
+                } 
+                else {
+                    float breath = mix(0.4, 0.6, sin(uTime * 5.0) * 0.5 + 0.5);
+                    vAlpha = brightness * breath * 1.15;
+                }
+
+                float tExpand = smoothstep(0.0, 1.0, uExpand);
+                pos = mix(pos, aExpandPos, tExpand);
+
+                vec4 mvPosition = modelViewMatrix * vec4(pos, 1.0);
+                gl_PointSize = uSize * sizeScale * (300.0 / -mvPosition.z);
+                gl_Position = projectionMatrix * mvPosition;
+            }
+        `;
+
+        const fragmentShader = `
+            varying vec3 vColor;
+            varying float vAlpha;
+            void main() {
+                float dist = length(gl_PointCoord - vec2(0.5));
+                if (dist > 0.5) discard;
+                float mask = pow(1.0 - dist * 2.0, 3.0);
+                gl_FragColor = vec4(vColor, vAlpha * mask);
+            }
+        `;
+
+        class Installation {
+            constructor() {
+                this.canvas = document.querySelector('#main-canvas');
+                this.spiralRotationAccumulator = 0;
+                this.expandCurrent = 0;
+                this.expandTarget = 0;
+                this.snowEnabled = false;
+                this.snowOpacity = 0;
+                this.keys = {};
+                
+                this.handsDetected = 0;
+                this.currentGesture = 'none';
+                this.gestureExpandTarget = 0;
+                this.pendingGesture = null;
+                this.pendingSince = 0;
+                this.lastAppliedAt = 0;
+                this.snowHoldTimer = 0;
+                this.manualSnowToggle = false;
+
+                this.handLandmarker = null;
+                this.video = document.getElementById('video');
+                this.lastVideoTime = -1;
+
+                this.initScene();
+                this.initStructures();
+                this.initSnow();
+                this.initPostProcessing();
+                this.initInteractions();
+                this.initGestureTracking();
+                this.animate();
+            }
+
+            initScene() {
+                this.scene = new THREE.Scene();
+                this.camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+                this.camera.position.set(0, 6, 22);
+                this.camera.lookAt(0, 5, 0);
+                this.renderer = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: true });
+                this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+                this.renderer.setSize(window.innerWidth, window.innerHeight);
+                this.renderer.setClearColor(0x010103);
+            }
+
+            initStructures() {
+                this.sharedUniforms = { 
+                    uTime: { value: 0 }, 
+                    uSize: { value: 0.9 }, 
+                    uSpiralRotation: { value: 0 },
+                    uExpand: { value: 0 }
+                };
+
+                const halton = (index, base) => {
+                    let result = 0, f = 1 / base, i = index;
+                    while (i > 0) {
+                        result += f * (i % base);
+                        i = Math.floor(i / base);
+                        f /= base;
+                    }
+                    return result;
+                };
+
+                const createPoints = (count, layerId, isBloom) => {
+                    const geo = new THREE.BufferGeometry();
+                    const pos = [], col = [], lay = [], bri = [], spi = [], seeds = [], expandPos = [];
+                    const STAR_ROT = 1.31; 
+                    const { boxMin, boxMax } = CONFIG.expand;
+
+                    for(let i=0; i<count; i++) {
+                        let y, r, theta, colorObj = CONFIG.colors.volume;
+                        seeds.push(Math.random()); 
+
+                        const hx = halton(i + 1, 2);
+                        const hy = halton(i + 1, 3);
+                        const hz = halton(i + 1, 5);
+                        expandPos.push(
+                            boxMin.x + hx * (boxMax.x - boxMin.x) + (CONFIG.expand.offsetX || 0),
+                            boxMin.y + hy * (boxMax.y - boxMin.y),
+                            boxMin.z + hz * (boxMax.z - boxMin.z)
+                        );
+
+                        if(layerId == 6.0) {
+                            colorObj = CONFIG.colors.blueDust;
+                            pos.push((Math.random()-0.5)*25, Math.random()*15 - 2, (Math.random()-0.5)*20);
+                            bri.push(0.4 + Math.random() * 0.4);
+                        }
+                      
+                        else if(layerId < 3.0 || layerId == 5.0) { 
+                            if (layerId == 5.0) {
+                                colorObj = CONFIG.colors.sparkle;
+                                let rawRand = Math.random();
+                                y = (rawRand > 0.94) ? (0.80 + Math.random() * 0.12) * 12.0 : Math.pow(rawRand, 1.2) * 12.0;
+                                let maxR = (1.0 - y / 12.0) * 4.5;
+                                r = maxR * (0.4 + 0.6 * Math.sqrt(Math.random()));
+                                bri.push(0.7 + Math.random() * 0.3);
+                            } else if (layerId == 2.0) {
+                                const t = Math.random();
+                                y = (t < 0.7) ? THREE.MathUtils.lerp(12.0 * 0.55, 12.0, Math.pow(Math.random(), 0.55)) : THREE.MathUtils.lerp(12.0 * 0.35, 12.0, Math.random());
+                                r = (1.0 - y / 12.0) * 4.5 * (0.2 + Math.random() * 0.8);
+                                bri.push(0.12 + Math.random() * 0.14);
+                                colorObj = CONFIG.colors.crown;
+                            } else {
+                                y = Math.pow(Math.random(), 2.0) * 12.0;
+                                let maxR = (1.0 - y / 12.0) * 4.5;
+                                if(layerId == 0.0) {
+                                    r = maxR * (0.15 + 0.85 * Math.sqrt(Math.random()));
+                                    colorObj = CONFIG.colors.volume;
+                                } else {
+                                    r = maxR * (0.9 + Math.random() * 0.1);
+                                    colorObj = CONFIG.colors.surface;
+                                }
+                                bri.push(0.3 + Math.random() * 0.4);
+                            }
+                            theta = Math.random() * Math.PI * 2;
+                            pos.push(Math.cos(theta)*r, y, Math.sin(theta)*r);
+                        } 
+                        else if(layerId == 3.0) {
+                            colorObj = CONFIG.colors.energy;
+                            pos.push(0,0,0);
+                            spi.push((i/count + Math.random()*0.05)%1.0, (Math.random()-0.5)*0.25, (Math.random()-0.5)*0.85);
+                            bri.push(0.55 + Math.random() * 0.22);
+                        } 
+                        else {
+                            const t_star = Math.random() * Math.PI * 2;
+                            const r_star = 0.45 * Math.pow(Math.random(), 1.5) * (0.6 + 0.8 * (0.6 + 0.4 * Math.cos(5.0 * (t_star + STAR_ROT))));
+                            const phi = Math.random() * Math.PI;
+                            pos.push(r_star * Math.cos(t_star) * Math.sin(phi), 12.4 + r_star * Math.sin(t_star) * Math.sin(phi) * 0.7, r_star * Math.cos(phi) * 0.5);
+                            const randCol = Math.random();
+                            colorObj = (randCol > 0.9) ? CONFIG.colors.starTint : (randCol < 0.1 ? CONFIG.colors.starEdge : CONFIG.colors.starCore);
+                            bri.push(0.70 + Math.random() * 0.25);
+                        }
+                        col.push(colorObj.r, colorObj.g, colorObj.b);
+                        lay.push(layerId);
+                        if(layerId < 3.0 || layerId >= 5.0) spi.push(0,0,0);
+                    }
+
+                    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+                    geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+                    geo.setAttribute('layerId', new THREE.Float32BufferAttribute(lay, 1));
+                    geo.setAttribute('brightness', new THREE.Float32BufferAttribute(bri, 1));
+                    geo.setAttribute('spiralData', new THREE.Float32BufferAttribute(spi, 3));
+                    geo.setAttribute('aSeed', new THREE.Float32BufferAttribute(seeds, 1));
+                    geo.setAttribute('aExpandPos', new THREE.Float32BufferAttribute(expandPos, 3));
+
+                    const mat = new THREE.ShaderMaterial({
+                        uniforms: this.sharedUniforms, vertexShader, fragmentShader,
+                        transparent: true, depthWrite: false,
+                        blending: (layerId >= 3.0 && layerId != 6.0 && layerId != 7.0) ? THREE.AdditiveBlending : THREE.NormalBlending
+                    });
+                    const p = new THREE.Points(geo, mat);
+                    p.layers.enable(ENTIRE_SCENE);
+                    if (isBloom) p.layers.enable(BLOOM_SCENE);
+                    return p;
+                };
+
+                this.treeVolume = createPoints(CONFIG.totalParticles * 0.65, 0.0, false);
+                this.treeSurface = createPoints(CONFIG.totalParticles * 0.25, 1.0, false);
+                this.treeCrown = createPoints(CONFIG.totalParticles * 0.10, 2.0, false);
+                this.treeSparkles = createPoints(CONFIG.totalParticles * 0.04, 5.0, false); 
+                this.blueDust = createPoints(CONFIG.totalParticles * 0.04, 6.0, false); 
+                this.spiralPoints = createPoints(6000, 3.0, true);
+                this.starCluster = createPoints(600, 4.0, true);
+                this.scene.add(this.treeVolume, this.treeSurface, this.treeCrown, this.treeSparkles, this.blueDust, this.spiralPoints, this.starCluster);
+            }
+
+            initSnow() {
+                const canvas = document.createElement('canvas');
+                canvas.width = 64;
+                canvas.height = 64;
+                const ctx = canvas.getContext('2d');
+                const R = 32;
+                
+                const coreGrad = ctx.createRadialGradient(R, R, 0, R, R, R * 0.25);
+                coreGrad.addColorStop(0.00, 'rgba(255,255,255,0.80)');
+                coreGrad.addColorStop(0.18, 'rgba(255,255,255,0.32)');
+                coreGrad.addColorStop(0.60, 'rgba(255,255,255,0.12)');
+                coreGrad.addColorStop(1.00, 'rgba(255,255,255,0.00)');
+                ctx.fillStyle = coreGrad;
+                ctx.fillRect(0, 0, 64, 64);
+                
+                const mistGrad = ctx.createRadialGradient(R, R, 0, R, R, R * 0.25);
+                mistGrad.addColorStop(0.00, 'rgba(255,255,255,0.08)');
+                mistGrad.addColorStop(0.50, 'rgba(255,255,255,0.02)');
+                mistGrad.addColorStop(1.00, 'rgba(255,255,255,0.00)');
+                ctx.fillStyle = mistGrad;
+                ctx.fillRect(0, 0, 64, 64);
+                
+                const texture = new THREE.CanvasTexture(canvas);
+
+                const { count, yMin, yMax } = CONFIG.snow;
+                const geo = new THREE.BufferGeometry();
+                const pos = [];
+                this.snowVelocities = [];
+
+                for (let i = 0; i < count; i++) {
+                    pos.push(
+                        (Math.random() - 0.5) * 40,
+                        yMin + Math.random() * (yMax - yMin),
+                        (Math.random() - 0.5) * 40
+                    );
+                    this.snowVelocities.push({
+                        vy: -(CONFIG.snow.fallSpeed.min + Math.random() * (CONFIG.snow.fallSpeed.max - CONFIG.snow.fallSpeed.min)),
+                        vx: (Math.random() - 0.5) * CONFIG.snow.driftAmount,
+                        phase: Math.random() * Math.PI * 2
+                    });
+                }
+
+                geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+
+                const mat = new THREE.PointsMaterial({
+                    map: texture,
+                    size: CONFIG.snow.size,
+                    transparent: true,
+                    depthWrite: false,
+                    blending: THREE.NormalBlending,
+                    sizeAttenuation: true,
+                    opacity: 0
+                });
+
+                this.snowPoints = new THREE.Points(geo, mat);
+                this.snowPoints.layers.enable(ENTIRE_SCENE);
+                this.scene.add(this.snowPoints);
+            }
+
+            initPostProcessing() {
+                const renderPass = new RenderPass(this.scene, this.camera);
+                this.bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.32, 0.10, 0.93);
+                this.bloomComposer = new EffectComposer(this.renderer);
+                this.bloomComposer.renderToScreen = false;
+                this.bloomComposer.addPass(renderPass);
+                this.bloomComposer.addPass(this.bloomPass);
+
+                const finalPass = new ShaderPass(
+                    new THREE.ShaderMaterial({
+                        uniforms: { baseTexture: { value: null }, bloomTexture: { value: this.bloomComposer.renderTarget2.texture } },
+                        vertexShader: `varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+                        fragmentShader: `uniform sampler2D baseTexture; uniform sampler2D bloomTexture; varying vec2 vUv; void main() { gl_FragColor = texture2D(baseTexture, vUv) + texture2D(bloomTexture, vUv) * 0.65; }`
+                    }), "baseTexture"
+                );
+                this.finalComposer = new EffectComposer(this.renderer);
+                this.finalComposer.addPass(renderPass);
+                this.finalComposer.addPass(finalPass);
+            }
+
+            initInteractions() {
+                window.addEventListener('keydown', (e) => {
+                    if (e.code === 'Space') {
+                        e.preventDefault();
+                        this.keys.space = true;
+                        this.expandTarget = 1;
+                    }
+                    if (e.code === 'KeyY' && !this.keys.y) {
+                        this.keys.y = true;
+                        this.manualSnowToggle = !this.manualSnowToggle;
+                        if (this.manualSnowToggle) {
+                            this.snowEnabled = true;
+                            this.snowHoldTimer = 0;
+                        } else {
+                            if (this.snowHoldTimer === 0) {
+                                this.snowEnabled = false;
+                            }
+                        }
+                    }
+                });
+
+                window.addEventListener('keyup', (e) => {
+                    if (e.code === 'Space') {
+                        this.keys.space = false;
+                        this.expandTarget = this.gestureExpandTarget;
+                    }
+                    if (e.code === 'KeyY') {
+                        this.keys.y = false;
+                    }
+                });
+
+                window.addEventListener('resize', () => {
+                    this.camera.aspect = window.innerWidth / window.innerHeight;
+                    this.camera.updateProjectionMatrix();
+                    this.renderer.setSize(window.innerWidth, window.innerHeight);
+                    this.bloomComposer.setSize(window.innerWidth, window.innerHeight);
+                    this.finalComposer.setSize(window.innerWidth, window.innerHeight);
+                });
+
+                this.updateHUD();
+            }
+
+            async initGestureTracking() {
+                try {
+                    const vision = await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.0');
+                    const { HandLandmarker, FilesetResolver } = vision;
+
+                    const filesetResolver = await FilesetResolver.forVisionTasks(
+                        'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.0/wasm'
+                    );
+
+                    this.handLandmarker = await HandLandmarker.createFromOptions(filesetResolver, {
+                        baseOptions: {
+                            modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',
+                            delegate: 'GPU'
+                        },
+                        runningMode: 'VIDEO',
+                        numHands: 2
+                    });
+
+                    const stream = await navigator.mediaDevices.getUserMedia({
+                        video: { facingMode: 'user' }
+                    });
+                    this.video.srcObject = stream;
+
+                } catch (error) {
+                    console.warn('Gesture tracking initialization failed:', error);
+                }
+            }
+
+            classifyHandGesture(landmarks) {
+                const indexTip = landmarks[8];
+                const indexPip = landmarks[6];
+                const middleTip = landmarks[12];
+                const middlePip = landmarks[10];
+                const ringTip = landmarks[16];
+                const ringPip = landmarks[14];
+                const pinkyTip = landmarks[20];
+                const pinkyPip = landmarks[18];
+
+                let extendedCount = 0;
+                if (indexTip.y < indexPip.y) extendedCount++;
+                if (middleTip.y < middlePip.y) extendedCount++;
+                if (ringTip.y < ringPip.y) extendedCount++;
+                if (pinkyTip.y < pinkyPip.y) extendedCount++;
+
+                if (extendedCount >= 3) return 'open';
+                if (extendedCount <= 1) return 'fist';
+                return 'none';
+            }
+
+            detectGesture() {
+                if (!this.handLandmarker || this.video.readyState !== 4) return;
+
+                const now = performance.now();
+                if (this.video.currentTime === this.lastVideoTime) return;
+                this.lastVideoTime = this.video.currentTime;
+
+                const results = this.handLandmarker.detectForVideo(this.video, now);
+                
+                this.handsDetected = results.landmarks ? results.landmarks.length : 0;
+
+                let detectedGesture = 'none';
+                if (this.handsDetected === 1) {
+                    detectedGesture = this.classifyHandGesture(results.landmarks[0]);
+                } else if (this.handsDetected === 2) {
+                    const g1 = this.classifyHandGesture(results.landmarks[0]);
+                    const g2 = this.classifyHandGesture(results.landmarks[1]);
+                    if (g1 === 'open' && g2 === 'open') {
+                        detectedGesture = 'dual-open';
+                    } else if (g1 === 'open' || g2 === 'open') {
+                        detectedGesture = 'open';
+                    } else if (g1 === 'fist' || g2 === 'fist') {
+                        detectedGesture = 'fist';
+                    }
+                }
+
+                if (detectedGesture === this.pendingGesture) {
+                    const elapsed = now - this.pendingSince;
+                    let stableWindow = CONFIG.gesture.stableWindowOpen;
+                    if (detectedGesture === 'dual-open') {
+                        stableWindow = CONFIG.gesture.stableWindowDual;
+                    }
+
+                    if (elapsed >= stableWindow && (now - this.lastAppliedAt) >= CONFIG.gesture.cooldown) {
+                        this.applyGesture(detectedGesture);
+                        this.lastAppliedAt = now;
+                    }
+                } else {
+                    this.pendingGesture = detectedGesture;
+                    this.pendingSince = now;
+                }
+            }
+
+            applyGesture(gesture) {
+                this.currentGesture = gesture;
+
+                if (gesture === 'open') {
+                    this.gestureExpandTarget = 1;
+                    if (!this.keys.space) {
+                        this.expandTarget = 1;
+                    }
+                } else if (gesture === 'fist') {
+                    this.gestureExpandTarget = 0;
+                    if (!this.keys.space) {
+                        this.expandTarget = 0;
+                    }
+                } else if (gesture === 'dual-open') {
+                    if (!this.manualSnowToggle) {
+                        this.snowEnabled = true;
+                        this.snowHoldTimer = CONFIG.gesture.snowHoldDuration;
+                    }
+                }
+            }
+
+            updateHUD() {
+                const hud = document.getElementById('hud');
+                const expandPct = Math.round(this.expandCurrent * 100);
+                const snowStatus = this.snowEnabled ? 'ON' : 'OFF';
+                hud.innerHTML = `Hands detected: ${this.handsDetected}<br>Gesture: ${this.currentGesture}<br>Expand: ${expandPct}%<br>Snow: ${snowStatus}<br><br>Help: Space=Expand(hold) • Y=Snow toggle`;
+            }
+
+            updateSnow(dt) {
+                const { yMin, yMax, fadeInSpeed, fadeOutSpeed, baseOpacity } = CONFIG.snow;
+                const targetOpacity = this.snowEnabled ? baseOpacity : 0;
+                const fadeSpeed = this.snowEnabled ? fadeInSpeed : fadeOutSpeed;
+
+                this.snowOpacity += (targetOpacity - this.snowOpacity) * fadeSpeed;
+                this.snowPoints.material.opacity = this.snowOpacity;
+
+                if (this.snowOpacity > 0.01) {
+                  const positions = this.snowPoints.geometry.attributes.position.array;
+
+                  for (let i = 0; i < this.snowVelocities.length; i++) {
+                    const vel = this.snowVelocities[i];
+                    const idx = i * 3;
+
+                    positions[idx] += vel.vx * dt;
+                    positions[idx + 1] += vel.vy * dt;
+
+                    if (positions[idx + 1] < yMin) {
+                        positions[idx + 1] = yMax;
+                        positions[idx] = (Math.random() - 0.5) * 40;
+                        positions[idx + 2] = (Math.random() - 0.5) * 40;
+                    }
+                    }
+
+                    this.snowPoints.geometry.attributes.position.needsUpdate = true;
+                }
+                }
+
+
+        animate() {
+            requestAnimationFrame(this.animate.bind(this));
+            const time = performance.now() * 0.001;
+            this.sharedUniforms.uTime.value = time;
+
+            this.detectGesture();
+
+            if (this.snowHoldTimer > 0) {
+                this.snowHoldTimer -= 16;
+                if (this.snowHoldTimer <= 0) {
+                    this.snowHoldTimer = 0;
+                    if (!this.manualSnowToggle) {
+                        this.snowEnabled = false;
+                    }
+                }
+            }
+
+            this.expandCurrent += (this.expandTarget - this.expandCurrent) * CONFIG.expand.lerpSpeed;
+            this.sharedUniforms.uExpand.value = this.expandCurrent;
+
+            const rot = CONFIG.treeSpeed;
+            this.scene.children.forEach(child => { 
+                if(child.type === 'Points' && child !== this.snowPoints) child.rotation.y += rot; 
+            });
+            this.spiralRotationAccumulator -= CONFIG.rotationMultiplier * rot;
+            this.sharedUniforms.uSpiralRotation.value = this.spiralRotationAccumulator;
+
+            this.updateSnow(0.016);
+            this.updateHUD();
+
+            this.camera.layers.set(BLOOM_SCENE);
+            this.bloomComposer.render();
+            this.camera.layers.set(ENTIRE_SCENE);
+            this.finalComposer.render();
+        }
+    }
+    new Installation();
+</script>
+</body>
+</html>
+```
