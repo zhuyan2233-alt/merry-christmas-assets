@@ -21,12 +21,64 @@
             pointer-events: none;
             backdrop-filter: blur(4px);
         }
+        #merry {
+            position: absolute;
+            left: 50%;
+            top: 42%;                      /* 中段偏上：38%~46% 可微调 */
+            transform: translate(-50%, -50%);
+            pointer-events: none;
+            z-index: 5;
+
+            font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial;
+            font-weight: 200;              /* 极细 */
+            font-size: 28px;               /* 克制 */
+            letter-spacing: 0.18em;        /* 轻微字距 */
+            color: rgba(252, 250, 255, 0.92);  /* 冷白略偏粉白 */
+            opacity: 0;
+
+            /* B：微呼吸 + 极轻上浮 */
+            will-change: opacity, transform, filter;
+            filter: blur(0px);
+        }
+
+        #merry.show {
+            animation: merryB 4.6s ease-in-out forwards; /* 总时长：淡入+停留+淡出 */
+        }
+
+        @keyframes merryB {
+        /* 起：几乎不可见 + 稍微下沉一点点 */
+            0% {
+                opacity: 0;
+                transform: translate(-50%, calc(-50% + 6px)) scale(0.992);
+            }
+
+            /* 缓慢淡入 + 上浮到位 */
+            35% {
+                opacity: 1;
+                transform: translate(-50%, -50%) scale(1.0);
+            }
+
+            /* 停留：极轻呼吸（非常克制） */
+            55% {
+                opacity: 1;
+                transform: translate(-50%, -50%) scale(1.004);
+            }
+
+            /* 开始淡出：微微回落一点点 */
+            100% {
+                opacity: 0;
+                transform: translate(-50%, calc(-50% - 4px)) scale(0.996);
+            }
+        }
+
         #video { display: none; }
     </style>
 </head>
 <body>
     <canvas id="main-canvas"></canvas>
+    <div id="merry">Merry Christmas</div>
     <div id="hud"></div>
+
     <video id="video" autoplay playsinline></video>
 
     <script type="importmap">
@@ -230,6 +282,11 @@
                 this.expandTarget = 0;
                 this.snowEnabled = false;
                 this.snowOpacity = 0;
+                // [MERRY TEXT - B] 仅在 snow Off->On 的瞬间触发一次
+                this._snowPrevEnabled = false;
+                this._merryShownOnce = false;
+                this._merryEl = document.getElementById('merry');
+
                 this.keys = {};
                 
                 this.handsDetected = 0;
@@ -999,6 +1056,25 @@
             }
         }
 
+        triggerMerryOnceB() {
+            if (this._merryShownOnce) return;
+            if (!this._merryEl) return;
+
+            this._merryShownOnce = true;
+
+            // 重新触发动画（确保首次触发稳定）
+            this._merryEl.classList.remove('show');
+            // 强制 reflow，保证 animation 重新开始
+            void this._merryEl.offsetWidth;
+            this._merryEl.classList.add('show');
+
+            // 动画结束后移除 class，避免影响后续布局（但不会再次触发）
+            setTimeout(() => {
+                this._merryEl.classList.remove('show');
+            }, 4800); // 略大于 4.6s
+        }
+
+
         updateHUD() {
     const hud = document.getElementById('hud');
     const expandPct = Math.round(this.expandCurrent * 100);
@@ -1139,6 +1215,13 @@ Y = Toggle Snow<br>
                     }
                 }
             }
+
+            // [MERRY TEXT - B] 仅在 snow 从 Off -> On 的瞬间触发一次
+            if (!this._snowPrevEnabled && this.snowEnabled) {
+                this.triggerMerryOnceB();
+            }
+            this._snowPrevEnabled = this.snowEnabled;
+
 
             this.expandCurrent += (this.expandTarget - this.expandCurrent) * CONFIG.expand.lerpSpeed;
             this.sharedUniforms.uExpand.value = this.expandCurrent;
