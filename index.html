@@ -87,6 +87,13 @@
                 stableWindowDual: 650,
                 cooldown: 600,
                 snowHoldDuration: 5000
+            },
+            // [MUSIC] Audio configuration
+            music: {
+                targetVolume: 0.20,
+                fadeInDuration: 1600,
+                fadeOutDuration: 1200,
+                fadeOutStartBefore: 1200
             }
         };
 
@@ -208,12 +215,20 @@
                 this.video = document.getElementById('video');
                 this.lastVideoTime = -1;
 
+                // [MUSIC] Initialize music state
+                this.music = null;
+                this.musicUnlocked = false;
+                this.musicPlaying = false;
+                this.fadingMusic = false;
+                this.fadeEndSetup = false;
+
                 this.initScene();
                 this.initStructures();
                 this.initSnow();
                 this.initPostProcessing();
                 this.initInteractions();
                 this.initGestureTracking();
+                this.initMusic(); // [MUSIC] Initialize audio
                 this.animate();
             }
 
@@ -428,12 +443,107 @@
                 this.finalComposer.addPass(finalPass);
             }
 
+            // [MUSIC] Initialize background music
+            initMusic() {
+                this.music = new Audio('./assets/audio/mistletoe.mp3');
+                this.music.muted = true;
+                this.music.volume = 0;
+                this.music.loop = false;
+
+                this.music.addEventListener('ended', () => {
+                    this.musicPlaying = false;
+                    this.fadeTo(0, 600).then(() => {
+                        this.musicUnlocked = false;
+                    });
+                });
+
+                this.music.addEventListener('loadedmetadata', () => {
+                    if (!this.fadeEndSetup && this.musicPlaying) {
+                        this.setupEndFade();
+                    }
+                });
+
+                // [MUSIC] Register one-time pointer interaction
+                window.addEventListener('pointerdown', () => {
+                    this.unlockMusicOnce();
+                }, { once: false });
+            }
+
+            // [MUSIC] Unlock and start music on first interaction
+            async unlockMusicOnce() {
+                if (this.musicUnlocked) return;
+                
+                try {
+                    this.musicUnlocked = true;
+                    this.music.muted = false;
+                    this.music.volume = 0;
+                    await this.music.play();
+                    this.musicPlaying = true;
+                    await this.fadeTo(CONFIG.music.targetVolume, CONFIG.music.fadeInDuration);
+                    this.setupEndFade();
+                } catch (error) {
+                    console.warn('[MUSIC] Failed to unlock audio:', error);
+                    this.musicUnlocked = false;
+                    this.musicPlaying = false;
+                }
+            }
+
+            // [MUSIC] Fade volume to target over duration
+            fadeTo(targetVolume, durationMs) {
+                return new Promise(resolve => {
+                    if (this.fadingMusic) return resolve();
+                    this.fadingMusic = true;
+
+                    const startVolume = this.music.volume;
+                    const startTime = performance.now();
+
+                    const fade = () => {
+                        const elapsed = performance.now() - startTime;
+                        const progress = Math.min(elapsed / durationMs, 1);
+                        this.music.volume = startVolume + (targetVolume - startVolume) * progress;
+
+                        if (progress < 1) {
+                            requestAnimationFrame(fade);
+                        } else {
+                            this.fadingMusic = false;
+                            resolve();
+                        }
+                    };
+
+                    requestAnimationFrame(fade);
+                });
+            }
+
+            // [MUSIC] Setup fade-out near end of track
+            setupEndFade() {
+                if (this.fadeEndSetup || !this.music.duration || isNaN(this.music.duration)) return;
+                this.fadeEndSetup = true;
+
+                const checkFadeOut = () => {
+                    if (!this.musicPlaying || this.music.paused || this.music.ended) return;
+
+                    const remaining = this.music.duration - this.music.currentTime;
+                    const fadeStart = CONFIG.music.fadeOutStartBefore / 1000;
+
+                    if (remaining <= fadeStart && !this.fadingMusic) {
+                        this.fadeTo(0, CONFIG.music.fadeOutDuration);
+                    }
+
+                    if (this.musicPlaying) {
+                        requestAnimationFrame(checkFadeOut);
+                    }
+                };
+
+                requestAnimationFrame(checkFadeOut);
+            }
+
             initInteractions() {
                 window.addEventListener('keydown', (e) => {
                     if (e.code === 'Space') {
                         e.preventDefault();
                         this.keys.space = true;
                         this.expandTarget = 1;
+                        this.unlockMusicOnce(); // [MUSIC] Unlock on Space
                     }
                     if (e.code === 'KeyY' && !this.keys.y) {
                         this.keys.y = true;
@@ -446,6 +556,7 @@
                                 this.snowEnabled = false;
                             }
                         }
+                        this.unlockMusicOnce(); // [MUSIC] Unlock on Y
                     }
                 });
 
@@ -510,98 +621,98 @@
 
                 let extendedCount = 0;
                 if (indexTip.y < indexPip.y) extendedCount++;
-                if (middleTip.y < middlePip.y) extendedCount++;
-                if (ringTip.y < ringPip.y) extendedCount++;
-                if (pinkyTip.y < pinkyPip.y) extendedCount++;
+if (middleTip.y < middlePip.y) extendedCount++;
+if (ringTip.y < ringPip.y) extendedCount++;
+if (pinkyTip.y < pinkyPip.y) extendedCount++;if (extendedCount >= 3) return 'open';
+            if (extendedCount <= 1) return 'fist';
+            return 'none';
+        }
 
-                if (extendedCount >= 3) return 'open';
-                if (extendedCount <= 1) return 'fist';
-                return 'none';
-            }
+        detectGesture() {
+            if (!this.handLandmarker || this.video.readyState !== 4) return;
 
-            detectGesture() {
-                if (!this.handLandmarker || this.video.readyState !== 4) return;
+            const now = performance.now();
+            if (this.video.currentTime === this.lastVideoTime) return;
+            this.lastVideoTime = this.video.currentTime;
 
-                const now = performance.now();
-                if (this.video.currentTime === this.lastVideoTime) return;
-                this.lastVideoTime = this.video.currentTime;
+            const results = this.handLandmarker.detectForVideo(this.video, now);
+            
+            this.handsDetected = results.landmarks ? results.landmarks.length : 0;
 
-                const results = this.handLandmarker.detectForVideo(this.video, now);
-                
-                this.handsDetected = results.landmarks ? results.landmarks.length : 0;
-
-                let detectedGesture = 'none';
-                if (this.handsDetected === 1) {
-                    detectedGesture = this.classifyHandGesture(results.landmarks[0]);
-                } else if (this.handsDetected === 2) {
-                    const g1 = this.classifyHandGesture(results.landmarks[0]);
-                    const g2 = this.classifyHandGesture(results.landmarks[1]);
-                    if (g1 === 'open' && g2 === 'open') {
-                        detectedGesture = 'dual-open';
-                    } else if (g1 === 'open' || g2 === 'open') {
-                        detectedGesture = 'open';
-                    } else if (g1 === 'fist' || g2 === 'fist') {
-                        detectedGesture = 'fist';
-                    }
-                }
-
-                if (detectedGesture === this.pendingGesture) {
-                    const elapsed = now - this.pendingSince;
-                    let stableWindow = CONFIG.gesture.stableWindowOpen;
-                    if (detectedGesture === 'dual-open') {
-                        stableWindow = CONFIG.gesture.stableWindowDual;
-                    }
-
-                    if (elapsed >= stableWindow && (now - this.lastAppliedAt) >= CONFIG.gesture.cooldown) {
-                        this.applyGesture(detectedGesture);
-                        this.lastAppliedAt = now;
-                    }
-                } else {
-                    this.pendingGesture = detectedGesture;
-                    this.pendingSince = now;
+            let detectedGesture = 'none';
+            if (this.handsDetected === 1) {
+                detectedGesture = this.classifyHandGesture(results.landmarks[0]);
+            } else if (this.handsDetected === 2) {
+                const g1 = this.classifyHandGesture(results.landmarks[0]);
+                const g2 = this.classifyHandGesture(results.landmarks[1]);
+                if (g1 === 'open' && g2 === 'open') {
+                    detectedGesture = 'dual-open';
+                } else if (g1 === 'open' || g2 === 'open') {
+                    detectedGesture = 'open';
+                } else if (g1 === 'fist' || g2 === 'fist') {
+                    detectedGesture = 'fist';
                 }
             }
 
-            applyGesture(gesture) {
-                this.currentGesture = gesture;
+            if (detectedGesture === this.pendingGesture) {
+                const elapsed = now - this.pendingSince;
+                let stableWindow = CONFIG.gesture.stableWindowOpen;
+                if (detectedGesture === 'dual-open') {
+                    stableWindow = CONFIG.gesture.stableWindowDual;
+                }
 
-                if (gesture === 'open') {
-                    this.gestureExpandTarget = 1;
-                    if (!this.keys.space) {
-                        this.expandTarget = 1;
-                    }
-                } else if (gesture === 'fist') {
-                    this.gestureExpandTarget = 0;
-                    if (!this.keys.space) {
-                        this.expandTarget = 0;
-                    }
-                } else if (gesture === 'dual-open') {
-                    if (!this.manualSnowToggle) {
-                        this.snowEnabled = true;
-                        this.snowHoldTimer = CONFIG.gesture.snowHoldDuration;
-                    }
+                if (elapsed >= stableWindow && (now - this.lastAppliedAt) >= CONFIG.gesture.cooldown) {
+                    this.applyGesture(detectedGesture);
+                    this.lastAppliedAt = now;
+                }
+            } else {
+                this.pendingGesture = detectedGesture;
+                this.pendingSince = now;
+            }
+        }
+
+        applyGesture(gesture) {
+            this.unlockMusicOnce(); // [MUSIC] Unlock on any gesture
+            this.currentGesture = gesture;
+
+            if (gesture === 'open') {
+                this.gestureExpandTarget = 1;
+                if (!this.keys.space) {
+                    this.expandTarget = 1;
+                }
+            } else if (gesture === 'fist') {
+                this.gestureExpandTarget = 0;
+                if (!this.keys.space) {
+                    this.expandTarget = 0;
+                }
+            } else if (gesture === 'dual-open') {
+                if (!this.manualSnowToggle) {
+                    this.snowEnabled = true;
+                    this.snowHoldTimer = CONFIG.gesture.snowHoldDuration;
                 }
             }
+        }
 
-            updateHUD() {
-                const hud = document.getElementById('hud');
-                const expandPct = Math.round(this.expandCurrent * 100);
-                const snowStatus = this.snowEnabled ? 'ON' : 'OFF';
-                hud.innerHTML = `Hands detected: ${this.handsDetected}<br>Gesture: ${this.currentGesture}<br>Expand: ${expandPct}%<br>Snow: ${snowStatus}<br><br>Help: Space=Expand(hold) • Y=Snow toggle`;
-            }
+        updateHUD() {
+            const hud = document.getElementById('hud');
+            const expandPct = Math.round(this.expandCurrent * 100);
+            const snowStatus = this.snowEnabled ? 'ON' : 'OFF';
+            const musicStatus = this.musicPlaying ? 'Playing' : 'Muted'; // [MUSIC] Add music status
+            hud.innerHTML = `Hands detected: ${this.handsDetected}<br>Gesture: ${this.currentGesture}<br>Expand: ${expandPct}%<br>Snow: ${snowStatus}<br>Music: ${musicStatus}<br><br>Help: Space=Expand(hold) • Y=Snow toggle`;
+        }
 
-            updateSnow(dt) {
-                const { yMin, yMax, fadeInSpeed, fadeOutSpeed, baseOpacity } = CONFIG.snow;
-                const targetOpacity = this.snowEnabled ? baseOpacity : 0;
-                const fadeSpeed = this.snowEnabled ? fadeInSpeed : fadeOutSpeed;
+        updateSnow(dt) {
+            const { yMin, yMax, fadeInSpeed, fadeOutSpeed, baseOpacity } = CONFIG.snow;
+            const targetOpacity = this.snowEnabled ? baseOpacity : 0;
+            const fadeSpeed = this.snowEnabled ? fadeInSpeed : fadeOutSpeed;
 
-                this.snowOpacity += (targetOpacity - this.snowOpacity) * fadeSpeed;
-                this.snowPoints.material.opacity = this.snowOpacity;
+            this.snowOpacity += (targetOpacity - this.snowOpacity) * fadeSpeed;
+            this.snowPoints.material.opacity = this.snowOpacity;
 
-                if (this.snowOpacity > 0.01) {
-                  const positions = this.snowPoints.geometry.attributes.position.array;
+            if (this.snowOpacity > 0.01) {
+                const positions = this.snowPoints.geometry.attributes.position.array;
 
-                  for (let i = 0; i < this.snowVelocities.length; i++) {
+                for (let i = 0; i < this.snowVelocities.length; i++) {
                     const vel = this.snowVelocities[i];
                     const idx = i * 3;
 
@@ -613,12 +724,11 @@
                         positions[idx] = (Math.random() - 0.5) * 40;
                         positions[idx + 2] = (Math.random() - 0.5) * 40;
                     }
-                    }
-
-                    this.snowPoints.geometry.attributes.position.needsUpdate = true;
-                }
                 }
 
+                this.snowPoints.geometry.attributes.position.needsUpdate = true;
+            }
+        }
 
         animate() {
             requestAnimationFrame(this.animate.bind(this));
