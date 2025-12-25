@@ -863,7 +863,6 @@
             
             this.handsDetected = results.landmarks ? results.landmarks.length : 0;
 
-            this.processPhotoGestures(results, now);
 
             let detectedGesture = 'none';
             if (this.handsDetected === 1) {
@@ -880,6 +879,9 @@
                 }
             }
 
+            this.oneHandOpenStable = (detectedGesture === 'open');
+            this.twoHandOpenStable = (detectedGesture === 'dual-open');
+
             if (detectedGesture === this.pendingGesture) {
                 const elapsed = now - this.pendingSince;
                 let stableWindow = CONFIG.gesture.stableWindowOpen;
@@ -894,78 +896,6 @@
             } else {
                 this.pendingGesture = detectedGesture;
                 this.pendingSince = now;
-            }
-        }
-
-        processPhotoGestures(results, now) {
-            const { oneHandStableMs, twoHandStableMs, dualLockMs, oneHandCooldownMs } = CONFIG.photoWall;
-
-            if (!results.landmarks || results.landmarks.length === 0) {
-                this.oneHandOpenStable = false;
-                this.twoHandOpenStable = false;
-                this.trackingLostSince = now;
-                return;
-            }
-
-            this.trackingLostSince = 0;
-
-            let openCount = 0;
-            let firstOpenHand = null;
-
-            for (let i = 0; i < results.landmarks.length; i++) {
-                const gesture = this.classifyHandGesture(results.landmarks[i]);
-                if (gesture === 'open') {
-                    openCount++;
-                    if (!firstOpenHand) firstOpenHand = results.landmarks[i];
-                }
-            }
-
-            if (openCount === 2) {
-                if (!this.twoHandOpenSince) {
-                    this.twoHandOpenSince = now;
-                } else if (now - this.twoHandOpenSince >= twoHandStableMs) {
-                    if (!this.twoHandOpenStable) {
-                        this.twoHandOpenStable = true;
-                        this.oneHandOpenStable = false;
-                        this.dualLockUntil = now + dualLockMs;
-                        if (!this.manualSnowToggle) {
-                            this.snowEnabled = true;
-                            this.snowHoldTimer = CONFIG.gesture.snowHoldDuration;
-                        }
-                        this.photoEnabled = false;
-                        this.photoGroup.visible = false;
-                    }
-                }
-                this.oneHandOpenSince = 0;
-            } 
-            else if (openCount === 1 && results.landmarks.length === 1) {
-                this.twoHandOpenSince = 0;
-                this.twoHandOpenStable = false;
-
-                if (now < this.dualLockUntil) {
-                    this.oneHandOpenSince = 0;
-                    this.oneHandOpenStable = false;
-                    return;
-                }
-
-                if (now - this.oneHandLastTriggered < oneHandCooldownMs) {
-                    return;
-                }
-
-                if (!this.oneHandOpenSince) {
-                    this.oneHandOpenSince = now;
-                } else if (now - this.oneHandOpenSince >= oneHandStableMs) {
-                    if (!this.oneHandOpenStable) {
-                        this.oneHandOpenStable = true;
-                        this.oneHandLastTriggered = now;
-                    }
-                }
-            } 
-            else {
-                this.oneHandOpenSince = 0;
-                this.twoHandOpenSince = 0;
-                this.oneHandOpenStable = false;
-                this.twoHandOpenStable = false;
             }
         }
 
