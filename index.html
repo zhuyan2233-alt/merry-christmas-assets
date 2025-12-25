@@ -1,1446 +1,1339 @@
 <!DOCTYPE html>
 <html lang="zh">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1.0" />
-  <title>Luminous Ephemera - Photo Wall</title>
-  <style>
-    body { margin: 0; background: #010103; overflow: hidden; font-family: sans-serif; }
-    canvas { display: block; }
-    #hud {
-      position: absolute;
-      top: 20px;
-      left: 20px;
-      background: rgba(0, 0, 0, 0.45);
-      color: #e0e0e0;
-      padding: 12px 16px;
-      border-radius: 6px;
-      font-family: 'Courier New', monospace;
-      font-size: 13px;
-      line-height: 1.6;
-      pointer-events: none;
-      backdrop-filter: blur(4px);
-    }
-    #video { display: none; }
-  </style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Luminous Ephemera - Photo Wall</title>
+    <style>
+        body { margin: 0; background: #010103; overflow: hidden; font-family: sans-serif; }
+        canvas { display: block; }
+        #hud {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: rgba(0, 0, 0, 0.45);
+            color: #e0e0e0;
+            padding: 12px 16px;
+            border-radius: 6px;
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+            line-height: 1.6;
+            pointer-events: none;
+            backdrop-filter: blur(4px);
+        }
+        #video { display: none; }
+    </style>
 </head>
 <body>
-  <canvas id="main-canvas"></canvas>
-  <div id="hud"></div>
-  <video id="video" autoplay playsinline></video>
+    <canvas id="main-canvas"></canvas>
+    <div id="hud"></div>
+    <video id="video" autoplay playsinline></video>
 
-  <script type="importmap">
-    {
-      "imports": {
-        "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
-        "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
-      }
-    }
-  </script>
-
-  <script type="module">
-    import * as THREE from 'three';
-    import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
-    import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
-    import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
-    import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
-
-    const ENTIRE_SCENE = 0;
-    const BLOOM_SCENE = 1;
-
-    const CONFIG = {
-      totalParticles: 80000,
-      treeHeight: 12.0,
-      baseRadius: 4.5,
-      treeSpeed: 0.0006,
-      rotationMultiplier: 3.0,
-      colors: {
-        volume: new THREE.Color(0xFFD6EA),
-        surface: new THREE.Color(0xFFE6F2),
-        crown: new THREE.Color(0xFFF3FA),
-        sparkle: new THREE.Color(0xF0F8FF),
-        energy: new THREE.Color(0xe0f7ff),
-        starCore: new THREE.Color(0xf8faff),
-        blueDust: new THREE.Color(0xDDEEFF),
-        starTint: new THREE.Color(0xffe4ec),
-        starEdge: new THREE.Color(0xe0f7ff)
-      },
-      expand: {
-        lerpSpeed: 0.03,
-        offsetX: -0.35,
-        boxMin: new THREE.Vector3(-18, -8, 2),
-        boxMax: new THREE.Vector3(18, 18, 20)
-      },
-      snow: {
-        count: 1100,
-        size: 6.0,
-        baseOpacity: 0.6,
-        fallSpeed: { min: 0.6, max: 1.4 },
-        driftAmount: 0.015,
-        fadeInSpeed: 0.015,
-        fadeOutSpeed: 0.012,
-        yMin: -3,
-        yMax: 18
-      },
-      gesture: {
-        stableWindowOpen: 450,
-        stableWindowDual: 650,
-        cooldown: 600,
-        snowHoldDuration: 5000
-      },
-      music: {
-        targetVolume: 0.20,
-        fadeInDuration: 1600,
-        fadeOutDuration: 1200,
-        fadeOutStartBefore: 1200
-      },
-      // [PHOTO WALL]
-      photoWall: {
-        photos: [
-          './assets/photos/Sana.jpg',
-          './assets/photos/accept.jpg',
-          './assets/photos/luoxiaohei.jpg',
-          './assets/photos/suga.jpg'
-        ],
-        planeZ: 11,
-        centerY: 5.2,
-        spreadX: 3.0,
-        spreadY: 6.0,          // ↑ 原来 2.0 -> 3 倍
-        jitter: 0.35,
-        minSpacing: 3.2,       // ↑ 匹配 photoSize=2.2 的更大间距
-        photoSize: 2.2,
-        hoverBorderScale: 1.12,
-        selectedBorderScale: 1.15,
-        hoverOpacity: 0.35,
-        selectedOpacity: 0.65,
-        normalColor: 0xffffff,         // 纯白，不再 tint
-        normalOpacity: 1.0,            // 不发灰
-        selectedColor: 0xffffff,
-        selectedOpacityValue: 1.0,
-        animationDuration: 700,
-        floatAmplitude: 0.08,
-        floatSpeed: 0.4,
-        oneHandStableMs: 180,
-        twoHandStableMs: 220,
-        dualLockMs: 600,
-        oneHandCooldownMs: 300,
-        pinchThreshold: 0.28,
-        pinchStableMs: 200,
-        pinchReleaseMs: 120,
-        trackingLostMs: 250
-      }
-    };
-
-    const vertexShader = `
-      attribute vec3 color;
-      attribute float layerId;
-      attribute float brightness;
-      attribute float aSeed;
-      attribute vec3 spiralData;
-      attribute vec3 aExpandPos;
-      varying vec3 vColor;
-      varying float vAlpha;
-      uniform float uTime;
-      uniform float uSize;
-      uniform float uSpiralRotation;
-      uniform float uExpand;
-
-      void main() {
-        vColor = color;
-        vec3 pos = position;
-        float sizeScale = 1.0;
-        float hProgress = pos.y / 12.0;
-
-        if(layerId == 6.0) {
-          pos.x += sin(uTime * 0.2 + aSeed * 6.28) * 0.5;
-          pos.z += cos(uTime * 0.2 + aSeed * 6.28) * 0.5;
-          pos.y += sin(uTime * 0.1 + aSeed * 10.0) * 0.3;
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
         }
+    </script>
 
-        if(layerId < 3.0 || layerId == 5.0 || layerId == 6.0) {
-          float noise = sin(uTime * 0.5 + pos.y) * 0.05;
-          pos.x += noise;
-          pos.z += noise;
-          float alphaBoost = (layerId == 2.0) ? 0.35 : 1.0;
+    <script type="module">
+        import * as THREE from 'three';
+        import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+        import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+        import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+        import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 
-          if(layerId == 5.0) {
-            sizeScale = 0.98;
-            float freq = (0.8 + aSeed * 1.5) * 0.5;
-            float phase = aSeed * 6.28;
-            float cycle = sin(uTime * freq + phase);
-            float gate = smoothstep(0.75, 0.95, cycle);
-            float shimmer = 0.85 + 0.15 * sin(uTime * 5.0 + phase);
-            alphaBoost = gate * shimmer;
-            float sparkleFade = smoothstep(1.0, 0.94, hProgress);
-            alphaBoost *= mix(0.70, 1.0, sparkleFade);
-            vAlpha = clamp(brightness + 0.2, 0.0, 1.0) * 0.95 * alphaBoost;
-          }
-          else if(layerId == 6.0) {
-            sizeScale = 0.72;
-            vAlpha = brightness * 0.42;
-          }
-          else {
-            float treeFade = smoothstep(1.0, 0.94, hProgress);
-            alphaBoost *= mix(0.80, 1.0, treeFade);
-            vAlpha = brightness * 0.65 * alphaBoost;
-          }
-          if(layerId == 2.0) sizeScale = 0.7;
-        }
-        else if(layerId == 3.0) {
-          float h = fract(spiralData.x + uTime * 0.012);
-          pos.y = h * 12.0;
-          float treeRadius = (1.0 - h) * 4.5;
-          float angle = (h * 3.14159 * 2.0 * 3.5) + uSpiralRotation;
-          float dr_dy = -0.375;
-          vec3 n = normalize(vec3(cos(angle), -dr_dy, sin(angle)));
-          vec3 t = vec3(-sin(angle), 0.0, cos(angle));
-          pos.x = cos(angle) * (treeRadius + mix(1.2, 0.4, h));
-          pos.z = sin(angle) * (treeRadius + mix(1.2, 0.4, h));
-          pos += n * spiralData.y * 2.0 + t * spiralData.z * 2.0;
-          vAlpha = brightness * smoothstep(0.0, 0.1, h) * smoothstep(1.0, 0.9, h) * 0.95;
-          sizeScale = 0.65;
-        }
-        else {
-          float breath = mix(0.4, 0.6, sin(uTime * 5.0) * 0.5 + 0.5);
-          vAlpha = brightness * breath * 1.15;
-        }
+        const ENTIRE_SCENE = 0;
+        const BLOOM_SCENE = 1;
 
-        float tExpand = smoothstep(0.0, 1.0, uExpand);
-        pos = mix(pos, aExpandPos, tExpand);
-
-        vec4 mvPosition = modelViewMatrix * vec4(pos, 1.0);
-        gl_PointSize = uSize * sizeScale * (300.0 / -mvPosition.z);
-        gl_Position = projectionMatrix * mvPosition;
-      }
-    `;
-
-    const fragmentShader = `
-      varying vec3 vColor;
-      varying float vAlpha;
-      void main() {
-        float dist = length(gl_PointCoord - vec2(0.5));
-        if (dist > 0.5) discard;
-        float mask = pow(1.0 - dist * 2.0, 3.0);
-        gl_FragColor = vec4(vColor, vAlpha * mask);
-      }
-    `;
-
-    class Installation {
-      constructor() {
-        this.canvas = document.querySelector('#main-canvas');
-        this.spiralRotationAccumulator = 0;
-        this.expandCurrent = 0;
-        this.expandTarget = 0;
-        this.snowEnabled = false;
-        this.snowOpacity = 0;
-        this.keys = {};
-
-        this.handsDetected = 0;
-        this.currentGesture = 'none';
-        this.gestureExpandTarget = 0;
-        this.pendingGesture = null;
-        this.pendingSince = 0;
-        this.lastAppliedAt = 0;
-        this.snowHoldTimer = 0;
-        this.manualSnowToggle = false;
-
-        this.handLandmarker = null;
-        this.video = document.getElementById('video');
-        this.lastVideoTime = -1;
-
-        this.music = null;
-        this.musicUnlocked = false;
-        this.musicPlaying = false;
-        this.fadingMusic = false;
-        this.fadeEndSetup = false;
-
-        // [PHOTO WALL] state
-        this.photoGroup = null;
-        this.photos = [];
-        this.photoEnabled = false;
-        this.hoveredPhoto = null;
-        this.selectedPhoto = null;
-        this.spaceHeld = false;
-        this.mouse = new THREE.Vector2();
-        this.raycaster = new THREE.Raycaster();
-
-        // [PHOTO WALL] Hand gesture state for photos
-        this.palmCenter = new THREE.Vector3();
-        this.palmNormal = new THREE.Vector3();
-        this.oneHandOpenStable = false;
-        this.twoHandOpenStable = false;
-        this.oneHandOpenSince = 0;
-        this.twoHandOpenSince = 0;
-        this.dualLockUntil = 0;
-        this.oneHandLastTriggered = 0;
-        this.isPinching = false;
-        this.pinchSince = 0;
-        this.pinchReleaseSince = 0;
-        this.pinchLocked = false;
-        this.trackingLostSince = 0;
-
-        // [HAND CURSOR]
-        this.handCursor = null;
-        this.handCursorTrail = [];
-        this.handCursorTrailPoints = null;
-
-        this.initScene();
-        this.initStructures();
-        this.initSnow();
-        this.initPhotoWall();
-        this.initHandCursor();
-        this.initPostProcessing();
-        this.initInteractions();
-        this.initGestureTracking();
-        this.initMusic();
-        this.animate();
-      }
-
-      initScene() {
-        this.scene = new THREE.Scene();
-        this.camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
-        this.camera.position.set(0, 6, 22);
-        this.camera.lookAt(0, 5, 0);
-        this.renderer = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: true });
-        this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-        this.renderer.setSize(window.innerWidth, window.innerHeight);
-        this.renderer.setClearColor(0x010103);
-      }
-
-      initStructures() {
-        this.sharedUniforms = {
-          uTime: { value: 0 },
-          uSize: { value: 0.9 },
-          uSpiralRotation: { value: 0 },
-          uExpand: { value: 0 }
+        const CONFIG = {
+            totalParticles: 80000, 
+            treeHeight: 12.0,
+            baseRadius: 4.5,
+            treeSpeed: 0.0006, 
+            rotationMultiplier: 3.0, 
+            colors: {
+                volume: new THREE.Color(0xFFD6EA),
+                surface: new THREE.Color(0xFFE6F2),
+                crown: new THREE.Color(0xFFF3FA),
+                sparkle: new THREE.Color(0xF0F8FF), 
+                energy: new THREE.Color(0xe0f7ff),
+                starCore: new THREE.Color(0xf8faff),
+                blueDust: new THREE.Color(0xDDEEFF),  
+                starTint: new THREE.Color(0xffe4ec),
+                starEdge: new THREE.Color(0xe0f7ff)
+            },
+            expand: {
+                lerpSpeed: 0.03,
+                offsetX: -0.35,
+                boxMin: new THREE.Vector3(-18, -8, 2),
+                boxMax: new THREE.Vector3(18, 18, 20)
+            },
+            snow: {
+                count: 1100,
+                size: 6.0,
+                baseOpacity: 0.6,
+                fallSpeed: { min: 0.6, max: 1.4 },
+                driftAmount: 0.015,
+                fadeInSpeed: 0.015,
+                fadeOutSpeed: 0.012,
+                yMin: -3,
+                yMax: 18
+            },
+            gesture: {
+                stableWindowOpen: 450,
+                stableWindowDual: 650,
+                cooldown: 600,
+                snowHoldDuration: 5000
+            },
+            music: {
+                targetVolume: 0.20,
+                fadeInDuration: 1600,
+                fadeOutDuration: 1200,
+                fadeOutStartBefore: 1200
+            },
+            // [PHOTO WALL] Photo wall configuration
+            photoWall: {
+                photos: [
+                    './assets/photos/Sana.jpg',
+                    './assets/photos/accept.jpg',
+                    './assets/photos/luoxiaohei.jpg',
+                    './assets/photos/suga.jpg'
+                ],
+                planeZ: 11,
+                centerY: 5.2,
+                spreadX: 3.0,
+                spreadY: 2.0,
+                jitter: 0.35,
+                minSpacing: 1.9,
+                photoSize: 1.8,
+                hoverBorderScale: 1.12,
+                selectedBorderScale: 1.15,
+                hoverOpacity: 0.35,
+                selectedOpacity: 0.65,
+                normalColor: 0xcccccc,
+                normalOpacity: 0.88,
+                selectedColor: 0xF2F6FF,
+                selectedOpacityValue: 1.0,
+                animationDuration: 700,
+                floatAmplitude: 0.08,
+                floatSpeed: 0.4,
+                oneHandStableMs: 180,
+                twoHandStableMs: 220,
+                dualLockMs: 600,
+                oneHandCooldownMs: 300,
+                pinchThreshold: 0.28,
+                pinchStableMs: 200,
+                pinchReleaseMs: 120,
+                trackingLostMs: 250
+            }
         };
 
-        const halton = (index, base) => {
-          let result = 0, f = 1 / base, i = index;
-          while (i > 0) {
-            result += f * (i % base);
-            i = Math.floor(i / base);
-            f /= base;
-          }
-          return result;
-        };
+        const vertexShader = `
+            attribute vec3 color;
+            attribute float layerId;
+            attribute float brightness;
+            attribute float aSeed; 
+            attribute vec3 spiralData;
+            attribute vec3 aExpandPos;
+            varying vec3 vColor;
+            varying float vAlpha;
+            uniform float uTime;
+            uniform float uSize;
+            uniform float uSpiralRotation;
+            uniform float uExpand;
 
-        const createPoints = (count, layerId, isBloom) => {
-          const geo = new THREE.BufferGeometry();
-          const pos = [], col = [], lay = [], bri = [], spi = [], seeds = [], expandPos = [];
-          const STAR_ROT = 1.31;
-          const { boxMin, boxMax } = CONFIG.expand;
+            void main() {
+                vColor = color;
+                vec3 pos = position;
+                float sizeScale = 1.0;
+                float hProgress = pos.y / 12.0;
 
-          for (let i = 0; i < count; i++) {
-            let y, r, theta, colorObj = CONFIG.colors.volume;
-            seeds.push(Math.random());
+                if(layerId == 6.0) {
+                    pos.x += sin(uTime * 0.2 + aSeed * 6.28) * 0.5;
+                    pos.z += cos(uTime * 0.2 + aSeed * 6.28) * 0.5;
+                    pos.y += sin(uTime * 0.1 + aSeed * 10.0) * 0.3;
+                }
 
-            const hx = halton(i + 1, 2);
-            const hy = halton(i + 1, 3);
-            const hz = halton(i + 1, 5);
-            expandPos.push(
-              boxMin.x + hx * (boxMax.x - boxMin.x) + (CONFIG.expand.offsetX || 0),
-              boxMin.y + hy * (boxMax.y - boxMin.y),
-              boxMin.z + hz * (boxMax.z - boxMin.z)
+                if(layerId < 3.0 || layerId == 5.0 || layerId == 6.0) { 
+                    float noise = sin(uTime * 0.5 + pos.y) * 0.05;
+                    pos.x += noise;
+                    pos.z += noise;
+                    float alphaBoost = (layerId == 2.0) ? 0.35 : 1.0;
+                    
+                    if(layerId == 5.0) {
+                        sizeScale = 0.98;
+                        float freq = (0.8 + aSeed * 1.5) * 0.5;
+                        float phase = aSeed * 6.28;
+                        float cycle = sin(uTime * freq + phase);
+                        float gate = smoothstep(0.75, 0.95, cycle); 
+                        float shimmer = 0.85 + 0.15 * sin(uTime * 5.0 + phase);
+                        alphaBoost = gate * shimmer;
+                        float sparkleFade = smoothstep(1.0, 0.94, hProgress);
+                        alphaBoost *= mix(0.70, 1.0, sparkleFade); 
+                        vAlpha = clamp(brightness + 0.2, 0.0, 1.0) * 0.95 * alphaBoost;
+                    } 
+                    else if(layerId == 6.0) { 
+                        sizeScale = 0.72;
+                        vAlpha = brightness * 0.42;
+                    }
+                 
+                    else {
+                        float treeFade = smoothstep(1.0, 0.94, hProgress);
+                        alphaBoost *= mix(0.80, 1.0, treeFade);
+                        vAlpha = brightness * 0.65 * alphaBoost;
+                    }
+                    if(layerId == 2.0) sizeScale = 0.7;
+                } 
+                else if(layerId == 3.0) {
+                    float h = fract(spiralData.x + uTime * 0.012);
+                    pos.y = h * 12.0;
+                    float treeRadius = (1.0 - h) * 4.5;
+                    float angle = (h * 3.14159 * 2.0 * 3.5) + uSpiralRotation;
+                    float dr_dy = -0.375;
+                    vec3 n = normalize(vec3(cos(angle), -dr_dy, sin(angle)));
+                    vec3 t = vec3(-sin(angle), 0.0, cos(angle));
+                    pos.x = cos(angle) * (treeRadius + mix(1.2, 0.4, h));
+                    pos.z = sin(angle) * (treeRadius + mix(1.2, 0.4, h));
+                    pos += n * spiralData.y * 2.0 + t * spiralData.z * 2.0;
+                    vAlpha = brightness * smoothstep(0.0, 0.1, h) * smoothstep(1.0, 0.9, h) * 0.95;
+                    sizeScale = 0.65;
+                } 
+                else {
+                    float breath = mix(0.4, 0.6, sin(uTime * 5.0) * 0.5 + 0.5);
+                    vAlpha = brightness * breath * 1.15;
+                }
+
+                float tExpand = smoothstep(0.0, 1.0, uExpand);
+                pos = mix(pos, aExpandPos, tExpand);
+
+                vec4 mvPosition = modelViewMatrix * vec4(pos, 1.0);
+                gl_PointSize = uSize * sizeScale * (300.0 / -mvPosition.z);
+                gl_Position = projectionMatrix * mvPosition;
+            }
+        `;
+
+        const fragmentShader = `
+            varying vec3 vColor;
+            varying float vAlpha;
+            void main() {
+                float dist = length(gl_PointCoord - vec2(0.5));
+                if (dist > 0.5) discard;
+                float mask = pow(1.0 - dist * 2.0, 3.0);
+                gl_FragColor = vec4(vColor, vAlpha * mask);
+            }
+        `;
+
+        class Installation {
+            constructor() {
+                this.canvas = document.querySelector('#main-canvas');
+                this.spiralRotationAccumulator = 0;
+                this.expandCurrent = 0;
+                this.expandTarget = 0;
+                this.snowEnabled = false;
+                this.snowOpacity = 0;
+                this.keys = {};
+                
+                this.handsDetected = 0;
+                this.currentGesture = 'none';
+                this.gestureExpandTarget = 0;
+                this.pendingGesture = null;
+                this.pendingSince = 0;
+                this.lastAppliedAt = 0;
+                this.snowHoldTimer = 0;
+                this.manualSnowToggle = false;
+
+                this.handLandmarker = null;
+                this.video = document.getElementById('video');
+                this.lastVideoTime = -1;
+
+                this.music = null;
+                this.musicUnlocked = false;
+                this.musicPlaying = false;
+                this.fadingMusic = false;
+                this.fadeEndSetup = false;
+
+                // [PHOTO WALL] Photo wall state
+                this.photoGroup = null;
+                this.photos = [];
+                this.photoEnabled = false;
+                this.hoveredPhoto = null;
+                this.selectedPhoto = null;
+                this.spaceHeld = false;
+                this.mouse = new THREE.Vector2();
+                this.raycaster = new THREE.Raycaster();
+                
+                // [PHOTO WALL] Hand gesture state for photos
+                this.palmCenter = new THREE.Vector3();
+                this.palmNormal = new THREE.Vector3();
+                this.oneHandOpenStable = false;
+                this.twoHandOpenStable = false;
+                this.oneHandOpenSince = 0;
+                this.twoHandOpenSince = 0;
+                this.dualLockUntil = 0;
+                this.oneHandLastTriggered = 0;
+                this.isPinching = false;
+                this.pinchSince = 0;
+                this.pinchReleaseSince = 0;
+                this.pinchLocked = false;
+                this.trackingLostSince = 0;
+
+                this.initScene();
+                this.initStructures();
+                this.initSnow();
+                this.initPhotoWall();
+                this.initPostProcessing();
+                this.initInteractions();
+                this.initGestureTracking();
+                this.initMusic();
+                this.animate();
+            }
+
+            initScene() {
+                this.scene = new THREE.Scene();
+                this.camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+                this.camera.position.set(0, 6, 22);
+                this.camera.lookAt(0, 5, 0);
+                this.renderer = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: true });
+                this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+                this.renderer.setSize(window.innerWidth, window.innerHeight);
+                this.renderer.setClearColor(0x010103);
+            }
+
+            initStructures() {
+                this.sharedUniforms = { 
+                    uTime: { value: 0 }, 
+                    uSize: { value: 0.9 }, 
+                    uSpiralRotation: { value: 0 },
+                    uExpand: { value: 0 }
+                };
+
+                const halton = (index, base) => {
+                    let result = 0, f = 1 / base, i = index;
+                    while (i > 0) {
+                        result += f * (i % base);
+                        i = Math.floor(i / base);
+                        f /= base;
+                    }
+                    return result;
+                };
+
+                const createPoints = (count, layerId, isBloom) => {
+                    const geo = new THREE.BufferGeometry();
+                    const pos = [], col = [], lay = [], bri = [], spi = [], seeds = [], expandPos = [];
+                    const STAR_ROT = 1.31; 
+                    const { boxMin, boxMax } = CONFIG.expand;
+
+                    for(let i=0; i<count; i++) {
+                        let y, r, theta, colorObj = CONFIG.colors.volume;
+                        seeds.push(Math.random()); 
+
+                        const hx = halton(i + 1, 2);
+                        const hy = halton(i + 1, 3);
+                        const hz = halton(i + 1, 5);
+                        expandPos.push(
+                            boxMin.x + hx * (boxMax.x - boxMin.x) + (CONFIG.expand.offsetX || 0),
+                            boxMin.y + hy * (boxMax.y - boxMin.y),
+                            boxMin.z + hz * (boxMax.z - boxMin.z)
+                        );
+
+                        if(layerId == 6.0) {
+                            colorObj = CONFIG.colors.blueDust;
+                            pos.push((Math.random()-0.5)*25, Math.random()*15 - 2, (Math.random()-0.5)*20);
+                            bri.push(0.4 + Math.random() * 0.4);
+                        }
+                      
+                        else if(layerId < 3.0 || layerId == 5.0) { 
+                            if (layerId == 5.0) {
+                                colorObj = CONFIG.colors.sparkle;
+                                let rawRand = Math.random();
+                                y = (rawRand > 0.94) ? (0.80 + Math.random() * 0.12) * 12.0 : Math.pow(rawRand, 1.2) * 12.0;
+                                let maxR = (1.0 - y / 12.0) * 4.5;
+                                r = maxR * (0.4 + 0.6 * Math.sqrt(Math.random()));
+                                bri.push(0.7 + Math.random() * 0.3);
+                            } else if (layerId == 2.0) {
+                                const t = Math.random();
+                                y = (t < 0.7) ? THREE.MathUtils.lerp(12.0 * 0.55, 12.0, Math.pow(Math.random(), 0.55)) : THREE.MathUtils.lerp(12.0 * 0.35, 12.0, Math.random());
+                                r = (1.0 - y / 12.0) * 4.5 * (0.2 + Math.random() * 0.8);
+                                bri.push(0.12 + Math.random() * 0.14);
+                                colorObj = CONFIG.colors.crown;
+                            } else {
+                                y = Math.pow(Math.random(), 2.0) * 12.0;
+                                let maxR = (1.0 - y / 12.0) * 4.5;
+                                if(layerId == 0.0) {
+                                    r = maxR * (0.15 + 0.85 * Math.sqrt(Math.random()));
+                                    colorObj = CONFIG.colors.volume;
+                                } else {
+                                    r = maxR * (0.9 + Math.random() * 0.1);
+                                    colorObj = CONFIG.colors.surface;
+                                }
+                                bri.push(0.3 + Math.random() * 0.4);
+                            }
+                            theta = Math.random() * Math.PI * 2;
+                            pos.push(Math.cos(theta)*r, y, Math.sin(theta)*r);
+                        } 
+                        else if(layerId == 3.0) {
+                            colorObj = CONFIG.colors.energy;
+                            pos.push(0,0,0);
+                            spi.push((i/count + Math.random()*0.05)%1.0, (Math.random()-0.5)*0.25, (Math.random()-0.5)*0.85);
+                            bri.push(0.55 + Math.random() * 0.22);
+                        } 
+                        else {
+                            const t_star = Math.random() * Math.PI * 2;
+                            const r_star = 0.45 * Math.pow(Math.random(), 1.5) * (0.6 + 0.8 * (0.6 + 0.4 * Math.cos(5.0 * (t_star + STAR_ROT))));
+                            const phi = Math.random() * Math.PI;
+                            pos.push(r_star * Math.cos(t_star) * Math.sin(phi), 12.4 + r_star * Math.sin(t_star) * Math.sin(phi) * 0.7, r_star * Math.cos(phi) * 0.5);
+                            const randCol = Math.random();
+                            colorObj = (randCol > 0.9) ? CONFIG.colors.starTint : (randCol < 0.1 ? CONFIG.colors.starEdge : CONFIG.colors.starCore);
+                            bri.push(0.70 + Math.random() * 0.25);
+                        }
+                        col.push(colorObj.r, colorObj.g, colorObj.b);
+                        lay.push(layerId);
+                        if(layerId < 3.0 || layerId >= 5.0) spi.push(0,0,0);
+                    }
+
+                    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+                    geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+                    geo.setAttribute('layerId', new THREE.Float32BufferAttribute(lay, 1));
+                    geo.setAttribute('brightness', new THREE.Float32BufferAttribute(bri, 1));
+                    geo.setAttribute('spiralData', new THREE.Float32BufferAttribute(spi, 3));
+                    geo.setAttribute('aSeed', new THREE.Float32BufferAttribute(seeds, 1));
+                    geo.setAttribute('aExpandPos', new THREE.Float32BufferAttribute(expandPos, 3));
+
+                    const mat = new THREE.ShaderMaterial({
+                        uniforms: this.sharedUniforms, vertexShader, fragmentShader,
+                        transparent: true, depthWrite: false,
+                        blending: (layerId >= 3.0 && layerId != 6.0 && layerId != 7.0) ? THREE.AdditiveBlending : THREE.NormalBlending
+                    });
+                    const p = new THREE.Points(geo, mat);
+                    p.layers.enable(ENTIRE_SCENE);
+                    if (isBloom) p.layers.enable(BLOOM_SCENE);
+                    return p;
+                };
+
+                this.treeVolume = createPoints(CONFIG.totalParticles * 0.65, 0.0, false);
+                this.treeSurface = createPoints(CONFIG.totalParticles * 0.25, 1.0, false);
+                this.treeCrown = createPoints(CONFIG.totalParticles * 0.10, 2.0, false);
+                this.treeSparkles = createPoints(CONFIG.totalParticles * 0.04, 5.0, false); 
+                this.blueDust = createPoints(CONFIG.totalParticles * 0.04, 6.0, false); 
+                this.spiralPoints = createPoints(6000, 3.0, true);
+                this.starCluster = createPoints(600, 4.0, true);
+                this.scene.add(this.treeVolume, this.treeSurface, this.treeCrown, this.treeSparkles, this.blueDust, this.spiralPoints, this.starCluster);
+            }
+
+            initSnow() {
+                const canvas = document.createElement('canvas');
+                canvas.width = 64;
+                canvas.height = 64;
+                const ctx = canvas.getContext('2d');
+                const R = 32;
+                
+                const coreGrad = ctx.createRadialGradient(R, R, 0, R, R, R * 0.25);
+                coreGrad.addColorStop(0.00, 'rgba(255,255,255,0.80)');
+                coreGrad.addColorStop(0.18, 'rgba(255,255,255,0.32)');
+                coreGrad.addColorStop(0.60, 'rgba(255,255,255,0.12)');
+                coreGrad.addColorStop(1.00, 'rgba(255,255,255,0.00)');
+                ctx.fillStyle = coreGrad;
+                ctx.fillRect(0, 0, 64, 64);
+                
+                const mistGrad = ctx.createRadialGradient(R, R, 0, R, R, R * 0.25);
+                mistGrad.addColorStop(0.00, 'rgba(255,255,255,0.08)');
+                mistGrad.addColorStop(0.50, 'rgba(255,255,255,0.02)');
+                mistGrad.addColorStop(1.00, 'rgba(255,255,255,0.00)');
+                ctx.fillStyle = mistGrad;
+                ctx.fillRect(0, 0, 64, 64);
+                
+                const texture = new THREE.CanvasTexture(canvas);
+
+                const { count, yMin, yMax } = CONFIG.snow;
+                const geo = new THREE.BufferGeometry();
+                const pos = [];
+                this.snowVelocities = [];
+
+                for (let i = 0; i < count; i++) {
+                    pos.push(
+                        (Math.random() - 0.5) * 40,
+                        yMin + Math.random() * (yMax - yMin),
+                        (Math.random() - 0.5) * 40
+                    );
+                    this.snowVelocities.push({
+                        vy: -(CONFIG.snow.fallSpeed.min + Math.random() * (CONFIG.snow.fallSpeed.max - CONFIG.snow.fallSpeed.min)),
+                        vx: (Math.random() - 0.5) * CONFIG.snow.driftAmount,
+                        phase: Math.random() * Math.PI * 2
+                    });
+                }
+
+                geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+
+                const mat = new THREE.PointsMaterial({
+                    map: texture,
+                    size: CONFIG.snow.size,
+                    transparent: true,
+                    depthWrite: false,
+                    blending: THREE.NormalBlending,
+                    sizeAttenuation: true,
+                    opacity: 0
+                });
+
+                this.snowPoints = new THREE.Points(geo, mat);
+                this.snowPoints.layers.enable(ENTIRE_SCENE);
+                this.scene.add(this.snowPoints);
+            }
+
+            // [PHOTO WALL - PLANE DISTRIBUTION B] Initialize photo wall with planar grid + jitter layout
+            initPhotoWall() {
+                this.photoGroup = new THREE.Group();
+                this.photoGroup.visible = false;
+                this.scene.add(this.photoGroup);
+
+                const { photos, planeZ, centerY, spreadX, spreadY, jitter, minSpacing, photoSize } = CONFIG.photoWall;
+                const loader = new THREE.TextureLoader();
+                const maxAnisotropy = this.renderer.capabilities.getMaxAnisotropy();
+
+                // Generate 2x2 grid positions with jitter
+                const gridPositions = [
+                    { x: -spreadX / 2, y: -spreadY / 2 },
+                    { x: spreadX / 2, y: -spreadY / 2 },
+                    { x: -spreadX / 2, y: spreadY / 2 },
+                    { x: spreadX / 2, y: spreadY / 2 }
+                ];
+
+                const positions = [];
+                const maxAttempts = 20;
+
+                for (let i = 0; i < photos.length; i++) {
+                    let pos;
+                    let attempts = 0;
+                    let valid = false;
+
+                    while (!valid && attempts < maxAttempts) {
+                        const gridPos = gridPositions[i];
+                        const jx = (Math.random() - 0.5) * jitter * 2;
+                        const jy = (Math.random() - 0.5) * jitter * 2;
+
+                        pos = {
+                            x: gridPos.x + jx,
+                            y: centerY + gridPos.y + jy,
+                            z: planeZ
+                        };
+
+                        // Check spacing
+                        valid = true;
+                        for (let j = 0; j < positions.length; j++) {
+                            const dx = pos.x - positions[j].x;
+                            const dy = pos.y - positions[j].y;
+                            const dist = Math.sqrt(dx * dx + dy * dy);
+                            if (dist < minSpacing) {
+                                valid = false;
+                                break;
+                            }
+                        }
+
+                        attempts++;
+                    }
+
+                    if (!valid) {
+                        // Fallback to grid position without jitter
+                        pos = {
+                            x: gridPositions[i].x,
+                            y: centerY + gridPositions[i].y,
+                            z: planeZ
+                        };
+                    }
+
+                    positions.push(pos);
+                }
+
+                // Create photo meshes
+                photos.forEach((photoPath, index) => {
+                    const pos = positions[index];
+
+                    // Create photo plane
+                    const geometry = new THREE.PlaneGeometry(photoSize, photoSize);
+                    const texture = loader.load(photoPath, (tex) => {
+                        tex.anisotropy = maxAnisotropy;
+                        tex.colorSpace = THREE.SRGBColorSpace;
+                    });
+
+                    const material = new THREE.MeshBasicMaterial({
+                        map: texture,
+                        side: THREE.DoubleSide,
+                        transparent: true,
+                        color: CONFIG.photoWall.normalColor,
+                        opacity: CONFIG.photoWall.normalOpacity
+                    });
+
+                    const mesh = new THREE.Mesh(geometry, material);
+                    mesh.position.set(pos.x, pos.y, pos.z);
+
+                    // Create border (hover/selected highlight)
+                    const borderGeo = new THREE.PlaneGeometry(
+                        photoSize * CONFIG.photoWall.hoverBorderScale,
+                        photoSize * CONFIG.photoWall.hoverBorderScale
+                    );
+                    const borderMat = new THREE.MeshBasicMaterial({
+                        color: 0xffffff,
+                        transparent: true,
+                        opacity: 0,
+                        depthWrite: false,
+                        side: THREE.DoubleSide
+                    });
+                    const border = new THREE.Mesh(borderGeo, borderMat);
+                    border.position.z = 0.01;
+                    border.renderOrder = 10;
+                    mesh.add(border);
+
+                    // Store original transform
+                    mesh.userData = {
+                        originalPosition: mesh.position.clone(),
+                        originalRotation: mesh.rotation.clone(),
+                        originalScale: mesh.scale.clone(),
+                        border: border,
+                        floatPhase: Math.random() * Math.PI * 2,
+                        animating: false,
+                        animationProgress: 0,
+                        animationTarget: null
+                    };
+
+                    this.photoGroup.add(mesh);
+                    this.photos.push(mesh);
+                });
+            }
+
+            initPostProcessing() {
+                const renderPass = new RenderPass(this.scene, this.camera);
+                this.bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.32, 0.10, 0.93);
+                this.bloomComposer = new EffectComposer(this.renderer);
+                this.bloomComposer.renderToScreen = false;
+                this.bloomComposer.addPass(renderPass);
+                this.bloomComposer.addPass(this.bloomPass);
+
+                const finalPass = new ShaderPass(
+                    new THREE.ShaderMaterial({
+                        uniforms: { baseTexture: { value: null }, bloomTexture: { value: this.bloomComposer.renderTarget2.texture } },
+                        vertexShader: `varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+                        fragmentShader: `uniform sampler2D baseTexture; uniform sampler2D bloomTexture; varying vec2 vUv; void main() { gl_FragColor = texture2D(baseTexture, vUv) + texture2D(bloomTexture, vUv) * 0.65; }`
+                    }), "baseTexture"
+                );
+                this.finalComposer = new EffectComposer(this.renderer);
+            this.finalComposer.addPass(renderPass);
+            this.finalComposer.addPass(finalPass);
+        }
+
+        initMusic() {
+            this.music = new Audio('./assets/audio/mistletoe.mp3');
+            this.music.muted = true;
+            this.music.volume = 0;
+            this.music.loop = false;
+
+            this.music.addEventListener('ended', () => {
+                this.musicPlaying = false;
+                this.fadeTo(0, 600).then(() => {
+                    this.musicUnlocked = false;
+                });
+            });
+
+            this.music.addEventListener('loadedmetadata', () => {
+                if (!this.fadeEndSetup && this.musicPlaying) {
+                    this.setupEndFade();
+                }
+            });
+
+            window.addEventListener('pointerdown', () => {
+                this.unlockMusicOnce();
+            }, { once: false });
+        }
+
+        async unlockMusicOnce() {
+            if (this.musicUnlocked) return;
+            
+            try {
+                this.musicUnlocked = true;
+                this.music.muted = false;
+                this.music.volume = 0;
+                await this.music.play();
+                this.musicPlaying = true;
+                await this.fadeTo(CONFIG.music.targetVolume, CONFIG.music.fadeInDuration);
+                this.setupEndFade();
+            } catch (error) {
+                console.warn('[MUSIC] Failed to unlock audio:', error);
+                this.musicUnlocked = false;
+                this.musicPlaying = false;
+            }
+        }
+
+        fadeTo(targetVolume, durationMs) {
+            return new Promise(resolve => {
+                if (this.fadingMusic) return resolve();
+                this.fadingMusic = true;
+
+                const startVolume = this.music.volume;
+                const startTime = performance.now();
+
+                const fade = () => {
+                    const elapsed = performance.now() - startTime;
+                    const progress = Math.min(elapsed / durationMs, 1);
+                    this.music.volume = startVolume + (targetVolume - startVolume) * progress;
+
+                    if (progress < 1) {
+                        requestAnimationFrame(fade);
+                    } else {
+                        this.fadingMusic = false;
+                        resolve();
+                    }
+                };
+
+                requestAnimationFrame(fade);
+            });
+        }
+
+        setupEndFade() {
+            if (this.fadeEndSetup || !this.music.duration || isNaN(this.music.duration)) return;
+            this.fadeEndSetup = true;
+
+            const checkFadeOut = () => {
+                if (!this.musicPlaying || this.music.paused || this.music.ended) return;
+
+                const remaining = this.music.duration - this.music.currentTime;
+                const fadeStart = CONFIG.music.fadeOutStartBefore / 1000;
+
+                if (remaining <= fadeStart && !this.fadingMusic) {
+                    this.fadeTo(0, CONFIG.music.fadeOutDuration);
+                }
+
+                if (this.musicPlaying) {
+                    requestAnimationFrame(checkFadeOut);
+                }
+            };
+
+            requestAnimationFrame(checkFadeOut);
+        }
+
+        initInteractions() {
+            window.addEventListener('keydown', (e) => {
+                if (e.code === 'Space') {
+                    e.preventDefault();
+                    this.keys.space = true;
+                    this.spaceHeld = true;
+                    if (!this.photoEnabled) {
+                        this.expandTarget = 1;
+                    }
+                    this.unlockMusicOnce();
+                }
+                if (e.code === 'KeyY' && !this.keys.y) {
+                    this.keys.y = true;
+                    this.manualSnowToggle = !this.manualSnowToggle;
+                    if (this.manualSnowToggle) {
+                        this.snowEnabled = true;
+                        this.snowHoldTimer = 0;
+                    } else {
+                        if (this.snowHoldTimer === 0) {
+                            this.snowEnabled = false;
+                        }
+                    }
+                    this.unlockMusicOnce();
+                }
+                if (e.code === 'Escape' && this.selectedPhoto) {
+                    this.exitSelectedPhoto();
+                }
+            });
+
+            window.addEventListener('keyup', (e) => {
+                if (e.code === 'Space') {
+                    this.keys.space = false;
+                    this.spaceHeld = false;
+                    if (!this.photoEnabled) {
+                        this.expandTarget = this.gestureExpandTarget;
+                    }
+                }
+                if (e.code === 'KeyY') {
+                    this.keys.y = false;
+                }
+            });
+
+            window.addEventListener('mousemove', (e) => {
+                this.mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+                this.mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+            });
+
+            window.addEventListener('click', (e) => {
+                this.handleMouseClick(e);
+            });
+
+            window.addEventListener('resize', () => {
+                this.camera.aspect = window.innerWidth / window.innerHeight;
+                this.camera.updateProjectionMatrix();
+                this.renderer.setSize(window.innerWidth, window.innerHeight);
+                this.bloomComposer.setSize(window.innerWidth, window.innerHeight);
+                this.finalComposer.setSize(window.innerWidth, window.innerHeight);
+            });
+
+            this.updateHUD();
+        }
+
+        handleMouseClick(event) {
+            if (!this.spaceHeld || !this.photoEnabled) return;
+
+            this.raycaster.setFromCamera(this.mouse, this.camera);
+            const intersects = this.raycaster.intersectObjects(this.photos, false);
+
+            if (this.selectedPhoto) {
+                if (intersects.length > 0 && intersects[0].object === this.selectedPhoto) {
+                    this.exitSelectedPhoto();
+                }
+            } else {
+                if (intersects.length > 0) {
+                    this.selectPhoto(intersects[0].object);
+                }
+            }
+        }
+
+        async initGestureTracking() {
+            try {
+                const vision = await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.0');
+                const { HandLandmarker, FilesetResolver } = vision;
+
+                const filesetResolver = await FilesetResolver.forVisionTasks(
+                    'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.0/wasm'
+                );
+
+                this.handLandmarker = await HandLandmarker.createFromOptions(filesetResolver, {
+                    baseOptions: {
+                        modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',
+                        delegate: 'GPU'
+                    },
+                    runningMode: 'VIDEO',
+                    numHands: 2
+                });
+
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: 'user' }
+                });
+                this.video.srcObject = stream;
+
+            } catch (error) {
+                console.warn('Gesture tracking initialization failed:', error);
+            }
+        }
+
+        classifyHandGesture(landmarks) {
+            const indexTip = landmarks[8];
+            const indexPip = landmarks[6];
+            const middleTip = landmarks[12];
+            const middlePip = landmarks[10];
+            const ringTip = landmarks[16];
+            const ringPip = landmarks[14];
+            const pinkyTip = landmarks[20];
+            const pinkyPip = landmarks[18];
+
+            let extendedCount = 0;
+            if (indexTip.y < indexPip.y) extendedCount++;
+            if (middleTip.y < middlePip.y) extendedCount++;
+            if (ringTip.y < ringPip.y) extendedCount++;
+            if (pinkyTip.y < pinkyPip.y) extendedCount++;
+
+            if (extendedCount >= 3) return 'open';
+            if (extendedCount <= 1) return 'fist';
+            return 'none';
+        }
+
+        calculatePalmGeometry(landmarks) {
+            const wrist = landmarks[0];
+            const indexMcp = landmarks[5];
+            const pinkyMcp = landmarks[17];
+
+            this.palmCenter.set(
+                (wrist.x + indexMcp.x + pinkyMcp.x) / 3,
+                (wrist.y + indexMcp.y + pinkyMcp.y) / 3,
+                (wrist.z + indexMcp.z + pinkyMcp.z) / 3
             );
 
-            if (layerId == 6.0) {
-              colorObj = CONFIG.colors.blueDust;
-              pos.push((Math.random() - 0.5) * 25, Math.random() * 15 - 2, (Math.random() - 0.5) * 20);
-              bri.push(0.4 + Math.random() * 0.4);
+            const v1x = indexMcp.x - wrist.x;
+            const v1y = indexMcp.y - wrist.y;
+            const v1z = indexMcp.z - wrist.z;
+
+            const v2x = pinkyMcp.x - wrist.x;
+            const v2y = pinkyMcp.y - wrist.y;
+            const v2z = pinkyMcp.z - wrist.z;
+
+            const nx = v1y * v2z - v1z * v2y;
+            const ny = v1z * v2x - v1x * v2z;
+            const nz = v1x * v2y - v1y * v2x;
+
+            const len = Math.sqrt(nx * nx + ny * ny + nz * nz);
+            if (len > 0.0001) {
+                this.palmNormal.set(nx / len, ny / len, nz / len);
+            } else {
+                this.palmNormal.set(0, -1, 0);
             }
-            else if (layerId < 3.0 || layerId == 5.0) {
-              if (layerId == 5.0) {
-                colorObj = CONFIG.colors.sparkle;
-                let rawRand = Math.random();
-                y = (rawRand > 0.94) ? (0.80 + Math.random() * 0.12) * 12.0 : Math.pow(rawRand, 1.2) * 12.0;
-                let maxR = (1.0 - y / 12.0) * 4.5;
-                r = maxR * (0.4 + 0.6 * Math.sqrt(Math.random()));
-                bri.push(0.7 + Math.random() * 0.3);
-              } else if (layerId == 2.0) {
-                const t = Math.random();
-                y = (t < 0.7) ? THREE.MathUtils.lerp(12.0 * 0.55, 12.0, Math.pow(Math.random(), 0.55)) : THREE.MathUtils.lerp(12.0 * 0.35, 12.0, Math.random());
-                r = (1.0 - y / 12.0) * 4.5 * (0.2 + Math.random() * 0.8);
-                bri.push(0.12 + Math.random() * 0.14);
-                colorObj = CONFIG.colors.crown;
-              } else {
-                y = Math.pow(Math.random(), 2.0) * 12.0;
-                let maxR = (1.0 - y / 12.0) * 4.5;
-                if (layerId == 0.0) {
-                  r = maxR * (0.15 + 0.85 * Math.sqrt(Math.random()));
-                  colorObj = CONFIG.colors.volume;
-                } else {
-                  r = maxR * (0.9 + Math.random() * 0.1);
-                  colorObj = CONFIG.colors.surface;
+        }
+
+        detectPinch(landmarks) {
+            const thumbTip = landmarks[4];
+            const indexTip = landmarks[8];
+            const indexMcp = landmarks[5];
+            const pinkyMcp = landmarks[17];
+
+            const palmWidth = Math.sqrt(
+                Math.pow(indexMcp.x - pinkyMcp.x, 2) +
+                Math.pow(indexMcp.y - pinkyMcp.y, 2) +
+                Math.pow(indexMcp.z - pinkyMcp.z, 2)
+            );
+
+            const pinchDist = Math.sqrt(
+                Math.pow(thumbTip.x - indexTip.x, 2) +
+                Math.pow(thumbTip.y - indexTip.y, 2) +
+                Math.pow(thumbTip.z - indexTip.z, 2)
+            );
+
+            const normalizedDist = pinchDist / (palmWidth + 0.001);
+            return normalizedDist < CONFIG.photoWall.pinchThreshold;
+        }
+
+        detectGesture() {
+            if (!this.handLandmarker || this.video.readyState !== 4) return;
+
+            const now = performance.now();
+            if (this.video.currentTime === this.lastVideoTime) return;
+            this.lastVideoTime = this.video.currentTime;
+
+            const results = this.handLandmarker.detectForVideo(this.video, now);
+            
+            this.handsDetected = results.landmarks ? results.landmarks.length : 0;
+
+            this.processPhotoGestures(results, now);
+
+            let detectedGesture = 'none';
+            if (this.handsDetected === 1) {
+                detectedGesture = this.classifyHandGesture(results.landmarks[0]);
+            } else if (this.handsDetected === 2) {
+                const g1 = this.classifyHandGesture(results.landmarks[0]);
+                const g2 = this.classifyHandGesture(results.landmarks[1]);
+                if (g1 === 'open' && g2 === 'open') {
+                    detectedGesture = 'dual-open';
+                } else if (g1 === 'open' || g2 === 'open') {
+                    detectedGesture = 'open';
+                } else if (g1 === 'fist' || g2 === 'fist') {
+                    detectedGesture = 'fist';
                 }
-                bri.push(0.3 + Math.random() * 0.4);
-              }
-              theta = Math.random() * Math.PI * 2;
-              pos.push(Math.cos(theta) * r, y, Math.sin(theta) * r);
             }
-            else if (layerId == 3.0) {
-              colorObj = CONFIG.colors.energy;
-              pos.push(0, 0, 0);
-              spi.push((i / count + Math.random() * 0.05) % 1.0, (Math.random() - 0.5) * 0.25, (Math.random() - 0.5) * 0.85);
-              bri.push(0.55 + Math.random() * 0.22);
+
+            if (detectedGesture === this.pendingGesture) {
+                const elapsed = now - this.pendingSince;
+                let stableWindow = CONFIG.gesture.stableWindowOpen;
+                if (detectedGesture === 'dual-open') {
+                    stableWindow = CONFIG.gesture.stableWindowDual;
+                }
+
+                if (elapsed >= stableWindow && (now - this.lastAppliedAt) >= CONFIG.gesture.cooldown) {
+                    this.applyGesture(detectedGesture);
+                    this.lastAppliedAt = now;
+                }
+            } else {
+                this.pendingGesture = detectedGesture;
+                this.pendingSince = now;
             }
+        }
+
+        processPhotoGestures(results, now) {
+            const { oneHandStableMs, twoHandStableMs, dualLockMs, oneHandCooldownMs } = CONFIG.photoWall;
+
+            if (!results.landmarks || results.landmarks.length === 0) {
+                this.oneHandOpenStable = false;
+                this.twoHandOpenStable = false;
+                this.trackingLostSince = now;
+                return;
+            }
+
+            this.trackingLostSince = 0;
+
+            let openCount = 0;
+            let firstOpenHand = null;
+
+            for (let i = 0; i < results.landmarks.length; i++) {
+                const gesture = this.classifyHandGesture(results.landmarks[i]);
+                if (gesture === 'open') {
+                    openCount++;
+                    if (!firstOpenHand) firstOpenHand = results.landmarks[i];
+                }
+            }
+
+            if (openCount === 2) {
+                if (!this.twoHandOpenSince) {
+                    this.twoHandOpenSince = now;
+                } else if (now - this.twoHandOpenSince >= twoHandStableMs) {
+                    if (!this.twoHandOpenStable) {
+                        this.twoHandOpenStable = true;
+                        this.oneHandOpenStable = false;
+                        this.dualLockUntil = now + dualLockMs;
+                        if (!this.manualSnowToggle) {
+                            this.snowEnabled = true;
+                            this.snowHoldTimer = CONFIG.gesture.snowHoldDuration;
+                        }
+                        this.photoEnabled = false;
+                        this.photoGroup.visible = false;
+                    }
+                }
+                this.oneHandOpenSince = 0;
+            } 
+            else if (openCount === 1 && results.landmarks.length === 1) {
+                this.twoHandOpenSince = 0;
+                this.twoHandOpenStable = false;
+
+                if (now < this.dualLockUntil) {
+                    this.oneHandOpenSince = 0;
+                    this.oneHandOpenStable = false;
+                    return;
+                }
+
+                if (now - this.oneHandLastTriggered < oneHandCooldownMs) {
+                    return;
+                }
+
+                if (!this.oneHandOpenSince) {
+                    this.oneHandOpenSince = now;
+                } else if (now - this.oneHandOpenSince >= oneHandStableMs) {
+                    if (!this.oneHandOpenStable) {
+                        this.oneHandOpenStable = true;
+                        this.oneHandLastTriggered = now;
+                    }
+                }
+
+                if (this.photoEnabled && firstOpenHand) {
+                    this.calculatePalmGeometry(firstOpenHand);
+                    this.updatePhotoHoverFromHand();
+                    this.updatePinchGesture(firstOpenHand, now);
+                }
+            } 
             else {
-              const t_star = Math.random() * Math.PI * 2;
-              const r_star = 0.45 * Math.pow(Math.random(), 1.5) * (0.6 + 0.8 * (0.6 + 0.4 * Math.cos(5.0 * (t_star + STAR_ROT))));
-              const phi = Math.random() * Math.PI;
-              pos.push(
-                r_star * Math.cos(t_star) * Math.sin(phi),
-                12.4 + r_star * Math.sin(t_star) * Math.sin(phi) * 0.7,
-                r_star * Math.cos(phi) * 0.5
-              );
-              const randCol = Math.random();
-              colorObj = (randCol > 0.9) ? CONFIG.colors.starTint : (randCol < 0.1 ? CONFIG.colors.starEdge : CONFIG.colors.starCore);
-              bri.push(0.70 + Math.random() * 0.25);
+                this.oneHandOpenSince = 0;
+                this.twoHandOpenSince = 0;
+                this.oneHandOpenStable = false;
+                this.twoHandOpenStable = false;
             }
-
-            col.push(colorObj.r, colorObj.g, colorObj.b);
-            lay.push(layerId);
-            if (layerId < 3.0 || layerId >= 5.0) spi.push(0, 0, 0);
-          }
-
-          geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-          geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
-          geo.setAttribute('layerId', new THREE.Float32BufferAttribute(lay, 1));
-          geo.setAttribute('brightness', new THREE.Float32BufferAttribute(bri, 1));
-          geo.setAttribute('spiralData', new THREE.Float32BufferAttribute(spi, 3));
-          geo.setAttribute('aSeed', new THREE.Float32BufferAttribute(seeds, 1));
-          geo.setAttribute('aExpandPos', new THREE.Float32BufferAttribute(expandPos, 3));
-
-          const mat = new THREE.ShaderMaterial({
-            uniforms: this.sharedUniforms,
-            vertexShader,
-            fragmentShader,
-            transparent: true,
-            depthWrite: false,
-            blending: (layerId >= 3.0 && layerId != 6.0 && layerId != 7.0) ? THREE.AdditiveBlending : THREE.NormalBlending
-          });
-
-          const p = new THREE.Points(geo, mat);
-          p.layers.enable(ENTIRE_SCENE);
-          if (isBloom) p.layers.enable(BLOOM_SCENE);
-          return p;
-        };
-
-        this.treeVolume = createPoints(CONFIG.totalParticles * 0.65, 0.0, false);
-        this.treeSurface = createPoints(CONFIG.totalParticles * 0.25, 1.0, false);
-        this.treeCrown = createPoints(CONFIG.totalParticles * 0.10, 2.0, false);
-        this.treeSparkles = createPoints(CONFIG.totalParticles * 0.04, 5.0, false);
-        this.blueDust = createPoints(CONFIG.totalParticles * 0.04, 6.0, false);
-        this.spiralPoints = createPoints(6000, 3.0, true);
-        this.starCluster = createPoints(600, 4.0, true);
-
-        this.scene.add(
-          this.treeVolume,
-          this.treeSurface,
-          this.treeCrown,
-          this.treeSparkles,
-          this.blueDust,
-          this.spiralPoints,
-          this.starCluster
-        );
-      }
-
-      initSnow() {
-        const canvas = document.createElement('canvas');
-        canvas.width = 64;
-        canvas.height = 64;
-        const ctx = canvas.getContext('2d');
-        const R = 32;
-
-        const coreGrad = ctx.createRadialGradient(R, R, 0, R, R, R * 0.25);
-        coreGrad.addColorStop(0.00, 'rgba(255,255,255,0.80)');
-        coreGrad.addColorStop(0.18, 'rgba(255,255,255,0.32)');
-        coreGrad.addColorStop(0.60, 'rgba(255,255,255,0.12)');
-        coreGrad.addColorStop(1.00, 'rgba(255,255,255,0.00)');
-        ctx.fillStyle = coreGrad;
-        ctx.fillRect(0, 0, 64, 64);
-
-        const mistGrad = ctx.createRadialGradient(R, R, 0, R, R, R * 0.25);
-        mistGrad.addColorStop(0.00, 'rgba(255,255,255,0.08)');
-        mistGrad.addColorStop(0.50, 'rgba(255,255,255,0.02)');
-        mistGrad.addColorStop(1.00, 'rgba(255,255,255,0.00)');
-        ctx.fillStyle = mistGrad;
-        ctx.fillRect(0, 0, 64, 64);
-
-        const texture = new THREE.CanvasTexture(canvas);
-
-        const { count, yMin, yMax } = CONFIG.snow;
-        const geo = new THREE.BufferGeometry();
-        const pos = [];
-        this.snowVelocities = [];
-
-        for (let i = 0; i < count; i++) {
-          pos.push(
-            (Math.random() - 0.5) * 40,
-            yMin + Math.random() * (yMax - yMin),
-            (Math.random() - 0.5) * 40
-          );
-          this.snowVelocities.push({
-            vy: -(CONFIG.snow.fallSpeed.min + Math.random() * (CONFIG.snow.fallSpeed.max - CONFIG.snow.fallSpeed.min)),
-            vx: (Math.random() - 0.5) * CONFIG.snow.driftAmount,
-            phase: Math.random() * Math.PI * 2
-          });
         }
 
-        geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+        // [PHOTO WALL - HAND RAYCAST NDC] Update photo hover using NDC-based raycasting
+        updatePhotoHoverFromHand() {
+            if (!this.photoEnabled || this.selectedPhoto) return;
 
-        const mat = new THREE.PointsMaterial({
-          map: texture,
-          size: CONFIG.snow.size,
-          transparent: true,
-          depthWrite: false,
-          blending: THREE.NormalBlending,
-          sizeAttenuation: true,
-          opacity: 0
-        });
+            // Convert palm center to NDC coordinates
+            const ndcX = this.palmCenter.x * 2 - 1;
+            const ndcY = -(this.palmCenter.y * 2 - 1);
 
-        this.snowPoints = new THREE.Points(geo, mat);
-        this.snowPoints.layers.enable(ENTIRE_SCENE);
-        this.scene.add(this.snowPoints);
-      }
+            this.raycaster.setFromCamera({ x: ndcX, y: ndcY }, this.camera);
+            const intersects = this.raycaster.intersectObjects(this.photos, false);
 
-      // [PHOTO WALL - PLANE DISTRIBUTION B]
-      initPhotoWall() {
-        this.photoGroup = new THREE.Group();
-        this.photoGroup.visible = false;
-        this.scene.add(this.photoGroup);
+            const newHovered = intersects.length > 0 ? intersects[0].object : null;
 
-        const { photos, planeZ, centerY, spreadX, spreadY, jitter, minSpacing, photoSize } = CONFIG.photoWall;
-        const loader = new THREE.TextureLoader();
-        const maxAnisotropy = this.renderer.capabilities.getMaxAnisotropy();
-
-        const gridPositions = [
-          { x: -spreadX / 2, y: -spreadY / 2 },
-          { x:  spreadX / 2, y: -spreadY / 2 },
-          { x: -spreadX / 2, y:  spreadY / 2 },
-          { x:  spreadX / 2, y:  spreadY / 2 }
-        ];
-
-        const positions = [];
-        const maxAttempts = 20;
-
-        for (let i = 0; i < photos.length; i++) {
-          let pos;
-          let attempts = 0;
-          let valid = false;
-
-          while (!valid && attempts < maxAttempts) {
-            const gridPos = gridPositions[i % gridPositions.length];
-            const jx = (Math.random() - 0.5) * jitter * 2;
-            const jy = (Math.random() - 0.5) * jitter * 2;
-
-            pos = { x: gridPos.x + jx, y: centerY + gridPos.y + jy, z: planeZ };
-
-            valid = true;
-            for (let j = 0; j < positions.length; j++) {
-              const dx = pos.x - positions[j].x;
-              const dy = pos.y - positions[j].y;
-              const dist = Math.sqrt(dx * dx + dy * dy);
-              if (dist < minSpacing) { valid = false; break; }
+            if (newHovered !== this.hoveredPhoto) {
+                if (this.hoveredPhoto) {
+                    this.hoveredPhoto.userData.border.material.opacity = 0;
+                }
+                if (newHovered) {
+                    newHovered.userData.border.material.opacity = CONFIG.photoWall.hoverOpacity;
+                }
+                this.hoveredPhoto = newHovered;
             }
-            attempts++;
-          }
-
-          if (!valid) {
-            const gp = gridPositions[i % gridPositions.length];
-            pos = { x: gp.x, y: centerY + gp.y, z: planeZ };
-          }
-
-          positions.push(pos);
         }
 
-        photos.forEach((photoPath, index) => {
-          const pos = positions[index];
+        updatePinchGesture(landmarks, now) {
+            const { pinchStableMs, pinchReleaseMs } = CONFIG.photoWall;
+            const isPinchingNow = this.detectPinch(landmarks);
 
-          const geometry = new THREE.PlaneGeometry(photoSize, photoSize);
-          const texture = loader.load(photoPath, (tex) => {
-            tex.anisotropy = maxAnisotropy;
-            tex.colorSpace = THREE.SRGBColorSpace;
-          });
-
-          const material = new THREE.MeshBasicMaterial({
-            map: texture,
-            side: THREE.DoubleSide,
-            transparent: true,
-            color: CONFIG.photoWall.normalColor,
-            opacity: CONFIG.photoWall.normalOpacity
-          });
-
-          const mesh = new THREE.Mesh(geometry, material);
-          mesh.position.set(pos.x, pos.y, pos.z);
-
-          const borderGeo = new THREE.PlaneGeometry(
-            photoSize * CONFIG.photoWall.hoverBorderScale,
-            photoSize * CONFIG.photoWall.hoverBorderScale
-          );
-          const borderMat = new THREE.MeshBasicMaterial({
-            color: 0xffffff,
-            transparent: true,
-            opacity: 0,
-            depthWrite: false,
-            side: THREE.DoubleSide
-          });
-          const border = new THREE.Mesh(borderGeo, borderMat);
-          border.position.z = 0.01;
-          border.renderOrder = 10;
-          mesh.add(border);
-
-          mesh.userData = {
-            originalPosition: mesh.position.clone(),
-            originalRotation: mesh.rotation.clone(),
-            originalScale: mesh.scale.clone(),
-            border: border,
-            floatPhase: Math.random() * Math.PI * 2,
-            animating: false,
-            animationProgress: 0,
-            animationTarget: null
-          };
-
-          this.photoGroup.add(mesh);
-          this.photos.push(mesh);
-        });
-      }
-
-      // [HAND CURSOR] almost-white, slight blue tint, soft trail
-      initHandCursor() {
-        const canvas = document.createElement('canvas');
-        canvas.width = 128;
-        canvas.height = 128;
-        const ctx = canvas.getContext('2d');
-
-        const cx = 64, cy = 64;
-
-        const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, 50);
-        grad.addColorStop(0.0, 'rgba(252,253,255,0.95)');
-        grad.addColorStop(0.3, 'rgba(250,251,255,0.70)');
-        grad.addColorStop(0.6, 'rgba(248,250,255,0.30)');
-        grad.addColorStop(1.0, 'rgba(245,248,255,0.00)');
-        ctx.fillStyle = grad;
-        ctx.fillRect(0, 0, 128, 128);
-
-        const glowGrad = ctx.createRadialGradient(cx, cy, 30, cx, cy, 64);
-        glowGrad.addColorStop(0.0, 'rgba(250,252,255,0.15)');
-        glowGrad.addColorStop(0.7, 'rgba(248,250,255,0.05)');
-        glowGrad.addColorStop(1.0, 'rgba(245,248,255,0.00)');
-        ctx.fillStyle = glowGrad;
-        ctx.fillRect(0, 0, 128, 128);
-
-        const texture = new THREE.CanvasTexture(canvas);
-
-        const spriteMat = new THREE.SpriteMaterial({
-          map: texture,
-          transparent: true,
-          depthTest: false,
-          depthWrite: false,
-          blending: THREE.AdditiveBlending
-        });
-        this.handCursor = new THREE.Sprite(spriteMat);
-        this.handCursor.scale.set(0.8, 0.8, 1);
-        this.handCursor.visible = false;
-        this.handCursor.renderOrder = 999;
-        this.scene.add(this.handCursor);
-
-        const trailCount = 8;
-        const trailGeo = new THREE.BufferGeometry();
-        const trailPos = new Float32Array(trailCount * 3);
-
-        trailGeo.setAttribute('position', new THREE.BufferAttribute(trailPos, 3));
-
-        const trailMat = new THREE.PointsMaterial({
-          map: texture,
-          transparent: true,
-          depthTest: false,
-          depthWrite: false,
-          blending: THREE.AdditiveBlending,
-          sizeAttenuation: true,
-          color: 0xfcfdff,
-          size: 0.35
-        });
-
-        this.handCursorTrailPoints = new THREE.Points(trailGeo, trailMat);
-        this.handCursorTrailPoints.visible = false;
-        this.handCursorTrailPoints.renderOrder = 998;
-        this.scene.add(this.handCursorTrailPoints);
-      }
-
-      initPostProcessing() {
-        const renderPass = new RenderPass(this.scene, this.camera);
-
-        this.bloomPass = new UnrealBloomPass(
-          new THREE.Vector2(window.innerWidth, window.innerHeight),
-          0.32, 0.10, 0.93
-        );
-
-        this.bloomComposer = new EffectComposer(this.renderer);
-        this.bloomComposer.renderToScreen = false;
-        this.bloomComposer.addPass(renderPass);
-        this.bloomComposer.addPass(this.bloomPass);
-
-        const finalPass = new ShaderPass(
-          new THREE.ShaderMaterial({
-            uniforms: {
-              baseTexture: { value: null },
-              bloomTexture: { value: this.bloomComposer.renderTarget2.texture },
-              uBloomMix: { value: 0.65 }
-            },
-            vertexShader: `
-              varying vec2 vUv;
-              void main() {
-                vUv = uv;
-                gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-              }
-            `,
-            fragmentShader: `
-              uniform sampler2D baseTexture;
-              uniform sampler2D bloomTexture;
-              uniform float uBloomMix;
-              varying vec2 vUv;
-              void main() {
-                gl_FragColor = texture2D(baseTexture, vUv) + texture2D(bloomTexture, vUv) * uBloomMix;
-              }
-            `
-          }),
-          "baseTexture"
-        );
-
-        this.finalComposer = new EffectComposer(this.renderer);
-        this.finalComposer.addPass(renderPass);
-        this.finalComposer.addPass(finalPass);
-
-        this.finalPass = finalPass;
-      }
-
-      initMusic() {
-        this.music = new Audio('./assets/audio/mistletoe.mp3');
-        this.music.muted = true;
-        this.music.volume = 0;
-        this.music.loop = false;
-
-        this.music.addEventListener('ended', () => {
-          this.musicPlaying = false;
-          this.fadeTo(0, 600).then(() => { this.musicUnlocked = false; });
-        });
-
-        this.music.addEventListener('loadedmetadata', () => {
-          if (!this.fadeEndSetup && this.musicPlaying) this.setupEndFade();
-        });
-
-        window.addEventListener('pointerdown', () => {
-          this.unlockMusicOnce();
-        }, { once: false });
-      }
-
-      async unlockMusicOnce() {
-        if (this.musicUnlocked) return;
-        try {
-          this.musicUnlocked = true;
-          this.music.muted = false;
-          this.music.volume = 0;
-          await this.music.play();
-          this.musicPlaying = true;
-          await this.fadeTo(CONFIG.music.targetVolume, CONFIG.music.fadeInDuration);
-          this.setupEndFade();
-        } catch (error) {
-          console.warn('[MUSIC] Failed to unlock audio:', error);
-          this.musicUnlocked = false;
-          this.musicPlaying = false;
-        }
-      }
-
-      fadeTo(targetVolume, durationMs) {
-        return new Promise(resolve => {
-          if (this.fadingMusic) return resolve();
-          this.fadingMusic = true;
-
-          const startVolume = this.music.volume;
-          const startTime = performance.now();
-
-          const fade = () => {
-            const elapsed = performance.now() - startTime;
-            const progress = Math.min(elapsed / durationMs, 1);
-            this.music.volume = startVolume + (targetVolume - startVolume) * progress;
-
-            if (progress < 1) requestAnimationFrame(fade);
-            else { this.fadingMusic = false; resolve(); }
-          };
-
-          requestAnimationFrame(fade);
-        });
-      }
-
-      setupEndFade() {
-        if (this.fadeEndSetup || !this.music.duration || isNaN(this.music.duration)) return;
-        this.fadeEndSetup = true;
-
-        const checkFadeOut = () => {
-          if (!this.musicPlaying || this.music.paused || this.music.ended) return;
-
-          const remaining = this.music.duration - this.music.currentTime;
-          const fadeStart = CONFIG.music.fadeOutStartBefore / 1000;
-
-          if (remaining <= fadeStart && !this.fadingMusic) {
-            this.fadeTo(0, CONFIG.music.fadeOutDuration);
-          }
-
-          if (this.musicPlaying) requestAnimationFrame(checkFadeOut);
-        };
-
-        requestAnimationFrame(checkFadeOut);
-      }
-
-      initInteractions() {
-        window.addEventListener('keydown', (e) => {
-          if (e.code === 'Space') {
-            e.preventDefault();
-            this.keys.space = true;
-            this.spaceHeld = true;
-
-            // Space 按住：无条件散开（同时满足 showPhotos gate）
-            this.expandTarget = 1;
-
-            this.unlockMusicOnce();
-          }
-
-          if (e.code === 'KeyY' && !this.keys.y) {
-            this.keys.y = true;
-            this.manualSnowToggle = !this.manualSnowToggle;
-            if (this.manualSnowToggle) {
-              this.snowEnabled = true;
-              this.snowHoldTimer = 0;
+            if (isPinchingNow) {
+                if (!this.pinchSince) {
+                    this.pinchSince = now;
+                } else if (now - this.pinchSince >= pinchStableMs && !this.pinchLocked) {
+                    if (this.hoveredPhoto && !this.selectedPhoto) {
+                        this.selectPhoto(this.hoveredPhoto);
+                        this.pinchLocked = true;
+                    }
+                }
+                this.pinchReleaseSince = 0;
             } else {
-              if (this.snowHoldTimer === 0) this.snowEnabled = false;
+                if (this.pinchLocked) {
+                    if (!this.pinchReleaseSince) {
+                        this.pinchReleaseSince = now;
+                    } else if (now - this.pinchReleaseSince >= pinchReleaseMs) {
+                        if (this.selectedPhoto) {
+                            this.exitSelectedPhoto();
+                        }
+                        this.pinchLocked = false;
+                    }
+                }
+                this.pinchSince = 0;
             }
+
+            if (this.selectedPhoto && this.trackingLostSince && now - this.trackingLostSince >= CONFIG.photoWall.trackingLostMs) {
+                this.exitSelectedPhoto();
+            }
+        }
+
+        // [PHOTO WALL - SELECT BRIGHTNESS] Select photo with sparkle-level brightness
+        selectPhoto(photo) {
+            if (this.selectedPhoto) return;
+
+            this.selectedPhoto = photo;
+            this.hoveredPhoto = null;
+
+            const targetZ = 15;
+            const targetPos = new THREE.Vector3(0, 5, targetZ);
+
+            const fov = this.camera.fov * Math.PI / 180;
+            const screenHeight = 2 * Math.tan(fov / 2) * (this.camera.position.z - targetZ);
+            const targetHeight = screenHeight * (5 / 12);
+            const targetScale = targetHeight / CONFIG.photoWall.photoSize;
+
+            photo.userData.animating = true;
+            photo.userData.animationProgress = 0;
+            photo.userData.animationTarget = {
+                position: targetPos,
+                scale: targetScale
+            };
+
+            // Enhance brightness to sparkle-level (2/3 of sparkle brightness)
+            photo.material.color.setHex(CONFIG.photoWall.selectedColor);
+            photo.material.opacity = CONFIG.photoWall.selectedOpacityValue;
+
+            // Update border for selected state
+            photo.userData.border.material.opacity = CONFIG.photoWall.selectedOpacity;
+            photo.userData.border.scale.set(
+                CONFIG.photoWall.selectedBorderScale,
+                CONFIG.photoWall.selectedBorderScale,
+                1
+            );
+        }
+
+        exitSelectedPhoto() {
+            if (!this.selectedPhoto) return;
+
+            const photo = this.selectedPhoto;
+            photo.userData.animating = true;
+            photo.userData.animationProgress = 0;
+            photo.userData.animationTarget = {
+                position: photo.userData.originalPosition.clone(),
+                rotation: photo.userData.originalRotation.clone(),
+                scale: 1
+            };
+
+            // Restore normal brightness
+            photo.material.color.setHex(CONFIG.photoWall.normalColor);
+            photo.material.opacity = CONFIG.photoWall.normalOpacity;
+
+            // Reset border
+            photo.userData.border.material.opacity = 0;
+            photo.userData.border.scale.set(1, 1, 1);
+
+            this.selectedPhoto = null;
+            this.pinchLocked = false;
+        }
+
+        applyGesture(gesture) {
             this.unlockMusicOnce();
-          }
+            this.currentGesture = gesture;
 
-          if (e.code === 'Escape' && this.selectedPhoto) {
-            this.exitSelectedPhoto();
-          }
-        });
-
-        window.addEventListener('keyup', (e) => {
-          if (e.code === 'Space') {
-            this.keys.space = false;
-            this.spaceHeld = false;
-
-            // Space 松开：无条件回树
-            this.expandTarget = this.gestureExpandTarget;
-
-            // 同时隐藏照片墙
-            this.photoEnabled = false;
-            this.photoGroup.visible = false;
-
-            // 如果有选中，退出
-            if (this.selectedPhoto) this.exitSelectedPhoto();
-
-            // 清空 hover
-            if (this.hoveredPhoto) {
-              this.hoveredPhoto.userData.border.material.opacity = 0;
-              this.hoveredPhoto = null;
+            if (gesture === 'open') {
+                this.gestureExpandTarget = 1;
+                if (!this.keys.space) {
+                    this.expandTarget = 1;
+                }
+            } else if (gesture === 'fist') {
+                this.gestureExpandTarget = 0;
+                if (!this.keys.space) {
+                    this.expandTarget = 0;
+                }
+                if (this.photoEnabled) {
+                    this.photoEnabled = false;
+                    this.photoGroup.visible = false;
+                    if (this.selectedPhoto) {
+                        this.exitSelectedPhoto();
+                    }
+                }
+            } else if (gesture === 'dual-open') {
+                if (!this.manualSnowToggle) {
+                    this.snowEnabled = true;
+                    this.snowHoldTimer = CONFIG.gesture.snowHoldDuration;
+                }
             }
-          }
-
-          if (e.code === 'KeyY') {
-            this.keys.y = false;
-          }
-        });
-
-        window.addEventListener('mousemove', (e) => {
-          this.mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
-          this.mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
-        });
-
-        window.addEventListener('click', (e) => { this.handleMouseClick(e); });
-
-        window.addEventListener('resize', () => {
-          this.camera.aspect = window.innerWidth / window.innerHeight;
-          this.camera.updateProjectionMatrix();
-          this.renderer.setSize(window.innerWidth, window.innerHeight);
-          this.bloomComposer.setSize(window.innerWidth, window.innerHeight);
-          this.finalComposer.setSize(window.innerWidth, window.innerHeight);
-        });
-
-        this.updateHUD();
-      }
-
-      handleMouseClick() {
-        if (!this.spaceHeld || !this.photoEnabled) return;
-
-        this.raycaster.setFromCamera(this.mouse, this.camera);
-        const intersects = this.raycaster.intersectObjects(this.photos, false);
-
-        if (this.selectedPhoto) {
-          if (intersects.length > 0 && intersects[0].object === this.selectedPhoto) {
-            this.exitSelectedPhoto();
-          }
-        } else {
-          if (intersects.length > 0) {
-            this.selectPhoto(intersects[0].object);
-          }
-        }
-      }
-
-      async initGestureTracking() {
-        try {
-          const vision = await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.0');
-          const { HandLandmarker, FilesetResolver } = vision;
-
-          const filesetResolver = await FilesetResolver.forVisionTasks(
-            'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.0/wasm'
-          );
-
-          this.handLandmarker = await HandLandmarker.createFromOptions(filesetResolver, {
-            baseOptions: {
-              modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',
-              delegate: 'GPU'
-            },
-            runningMode: 'VIDEO',
-            numHands: 2
-          });
-
-          const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' } });
-          this.video.srcObject = stream;
-
-        } catch (error) {
-          console.warn('Gesture tracking initialization failed:', error);
-        }
-      }
-
-      classifyHandGesture(landmarks) {
-        const indexTip = landmarks[8],  indexPip = landmarks[6];
-        const middleTip = landmarks[12], middlePip = landmarks[10];
-        const ringTip = landmarks[16], ringPip = landmarks[14];
-        const pinkyTip = landmarks[20], pinkyPip = landmarks[18];
-
-        let extendedCount = 0;
-        if (indexTip.y < indexPip.y) extendedCount++;
-        if (middleTip.y < middlePip.y) extendedCount++;
-        if (ringTip.y < ringPip.y) extendedCount++;
-        if (pinkyTip.y < pinkyPip.y) extendedCount++;
-
-        if (extendedCount >= 3) return 'open';
-        if (extendedCount <= 1) return 'fist';
-        return 'none';
-      }
-
-      calculatePalmGeometry(landmarks) {
-        const wrist = landmarks[0];
-        const indexMcp = landmarks[5];
-        const pinkyMcp = landmarks[17];
-
-        this.palmCenter.set(
-          (wrist.x + indexMcp.x + pinkyMcp.x) / 3,
-          (wrist.y + indexMcp.y + pinkyMcp.y) / 3,
-          (wrist.z + indexMcp.z + pinkyMcp.z) / 3
-        );
-
-        const v1x = indexMcp.x - wrist.x, v1y = indexMcp.y - wrist.y, v1z = indexMcp.z - wrist.z;
-        const v2x = pinkyMcp.x - wrist.x, v2y = pinkyMcp.y - wrist.y, v2z = pinkyMcp.z - wrist.z;
-
-        const nx = v1y * v2z - v1z * v2y;
-        const ny = v1z * v2x - v1x * v2z;
-        const nz = v1x * v2y - v1y * v2x;
-
-        const len = Math.sqrt(nx * nx + ny * ny + nz * nz);
-        if (len > 0.0001) this.palmNormal.set(nx / len, ny / len, nz / len);
-        else this.palmNormal.set(0, -1, 0);
-      }
-
-      detectPinch(landmarks) {
-        const thumbTip = landmarks[4];
-        const indexTip = landmarks[8];
-        const indexMcp = landmarks[5];
-        const pinkyMcp = landmarks[17];
-
-        const palmWidth = Math.sqrt(
-          Math.pow(indexMcp.x - pinkyMcp.x, 2) +
-          Math.pow(indexMcp.y - pinkyMcp.y, 2) +
-          Math.pow(indexMcp.z - pinkyMcp.z, 2)
-        );
-
-        const pinchDist = Math.sqrt(
-          Math.pow(thumbTip.x - indexTip.x, 2) +
-          Math.pow(thumbTip.y - indexTip.y, 2) +
-          Math.pow(thumbTip.z - indexTip.z, 2)
-        );
-
-        const normalizedDist = pinchDist / (palmWidth + 0.001);
-        return normalizedDist < CONFIG.photoWall.pinchThreshold;
-      }
-
-      detectGesture() {
-        if (!this.handLandmarker || this.video.readyState !== 4) return;
-
-        const now = performance.now();
-        if (this.video.currentTime === this.lastVideoTime) return;
-        this.lastVideoTime = this.video.currentTime;
-
-        const results = this.handLandmarker.detectForVideo(this.video, now);
-        this.handsDetected = results.landmarks ? results.landmarks.length : 0;
-
-        this.processPhotoGestures(results, now);
-
-        let detectedGesture = 'none';
-        if (this.handsDetected === 1) {
-          detectedGesture = this.classifyHandGesture(results.landmarks[0]);
-        } else if (this.handsDetected === 2) {
-          const g1 = this.classifyHandGesture(results.landmarks[0]);
-          const g2 = this.classifyHandGesture(results.landmarks[1]);
-          if (g1 === 'open' && g2 === 'open') detectedGesture = 'dual-open';
-          else if (g1 === 'open' || g2 === 'open') detectedGesture = 'open';
-          else if (g1 === 'fist' || g2 === 'fist') detectedGesture = 'fist';
         }
 
-        if (detectedGesture === this.pendingGesture) {
-          const elapsed = now - this.pendingSince;
-          let stableWindow = CONFIG.gesture.stableWindowOpen;
-          if (detectedGesture === 'dual-open') stableWindow = CONFIG.gesture.stableWindowDual;
+        updateHUD() {
+            const hud = document.getElementById('hud');
+            const expandPct = Math.round(this.expandCurrent * 100);
+            const snowStatus = this.snowEnabled ? 'ON' : 'OFF';
+            const musicStatus = this.musicPlaying ? 'Playing' : 'Muted';
+            let photoStatus = 'Off';
+            if (this.selectedPhoto) photoStatus = 'Selected';
+            else if (this.hoveredPhoto) photoStatus = 'Hover';
+            else if (this.photoEnabled) photoStatus = 'Visible';
 
-          if (elapsed >= stableWindow && (now - this.lastAppliedAt) >= CONFIG.gesture.cooldown) {
-            this.applyGesture(detectedGesture);
-            this.lastAppliedAt = now;
-          }
-        } else {
-          this.pendingGesture = detectedGesture;
-          this.pendingSince = now;
-        }
-      }
-
-      processPhotoGestures(results, now) {
-        const { oneHandStableMs, twoHandStableMs, dualLockMs, oneHandCooldownMs } = CONFIG.photoWall;
-
-        if (!results.landmarks || results.landmarks.length === 0) {
-          this.oneHandOpenStable = false;
-          this.twoHandOpenStable = false;
-          this.trackingLostSince = now;
-          return;
-        }
-        this.trackingLostSince = 0;
-
-        let openCount = 0;
-        let firstOpenHand = null;
-
-        for (let i = 0; i < results.landmarks.length; i++) {
-          const gesture = this.classifyHandGesture(results.landmarks[i]);
-          if (gesture === 'open') {
-            openCount++;
-            if (!firstOpenHand) firstOpenHand = results.landmarks[i];
-          }
+            hud.innerHTML = `Hands detected: ${this.handsDetected}<br>Gesture: ${this.currentGesture}<br>Expand: ${expandPct}%<br>Snow: ${snowStatus}<br>Music: ${musicStatus}<br>Photo: ${photoStatus}<br><br>Help: Space=Expand(hold) â€¢ Y=Snow toggle`;
         }
 
-        if (openCount === 2) {
-          if (!this.twoHandOpenSince) {
-            this.twoHandOpenSince = now;
-          } else if (now - this.twoHandOpenSince >= twoHandStableMs) {
-            if (!this.twoHandOpenStable) {
-              this.twoHandOpenStable = true;
-              this.oneHandOpenStable = false;
-              this.dualLockUntil = now + dualLockMs;
-              if (!this.manualSnowToggle) {
-                this.snowEnabled = true;
-                this.snowHoldTimer = CONFIG.gesture.snowHoldDuration;
-              }
-              this.photoEnabled = false;
-              this.photoGroup.visible = false;
+        updateSnow(dt) {
+            const { yMin, yMax, fadeInSpeed, fadeOutSpeed, baseOpacity } = CONFIG.snow;
+            const targetOpacity = this.snowEnabled ? baseOpacity : 0;
+            const fadeSpeed = this.snowEnabled ? fadeInSpeed : fadeOutSpeed;
+
+            this.snowOpacity += (targetOpacity - this.snowOpacity) * fadeSpeed;
+            this.snowPoints.material.opacity = this.snowOpacity;
+
+            if (this.snowOpacity > 0.01) {
+                const positions = this.snowPoints.geometry.attributes.position.array;
+
+                for (let i = 0; i < this.snowVelocities.length; i++) {
+                    const vel = this.snowVelocities[i];
+                    const idx = i * 3;
+
+                    positions[idx] += vel.vx * dt;
+                    positions[idx + 1] += vel.vy * dt;
+
+                    if (positions[idx + 1] < yMin) {
+                        positions[idx + 1] = yMax;
+                        positions[idx] = (Math.random() - 0.5) * 40;
+                        positions[idx + 2] = (Math.random() - 0.5) * 40;
+                    }
+                }
+
+                this.snowPoints.geometry.attributes.position.needsUpdate = true;
             }
-          }
-          this.oneHandOpenSince = 0;
         }
-        else if (openCount === 1 && results.landmarks.length === 1) {
-          this.twoHandOpenSince = 0;
-          this.twoHandOpenStable = false;
 
-          if (now < this.dualLockUntil) {
-            this.oneHandOpenSince = 0;
-            this.oneHandOpenStable = false;
-            return;
-          }
+        // [PHOTO WALL - BILLBOARD] Update photos to always face camera
+        updatePhotos(dt) {
+            const time = performance.now() * 0.001;
 
-          if (now - this.oneHandLastTriggered < oneHandCooldownMs) return;
+            // Update mouse-based hover if space held and photos enabled
+            if (this.spaceHeld && this.photoEnabled && !this.selectedPhoto) {
+                this.raycaster.setFromCamera(this.mouse, this.camera);
+                const intersects = this.raycaster.intersectObjects(this.photos, false);
+                const newHovered = intersects.length > 0 ? intersects[0].object : null;
 
-          if (!this.oneHandOpenSince) this.oneHandOpenSince = now;
-          else if (now - this.oneHandOpenSince >= oneHandStableMs) {
-            if (!this.oneHandOpenStable) {
-              this.oneHandOpenStable = true;
-              this.oneHandLastTriggered = now;
+                if (newHovered !== this.hoveredPhoto) {
+                    if (this.hoveredPhoto) {
+                        this.hoveredPhoto.userData.border.material.opacity = 0;
+                    }
+                    if (newHovered) {
+                        newHovered.userData.border.material.opacity = CONFIG.photoWall.hoverOpacity;
+                    }
+                    this.hoveredPhoto = newHovered;
+                }
             }
-          }
 
-          if (this.photoEnabled && firstOpenHand) {
-            this.calculatePalmGeometry(firstOpenHand);
-            this.updatePhotoHoverFromHand();
-            this.updatePinchGesture(firstOpenHand, now);
-          }
+            // Update each photo
+            this.photos.forEach(photo => {
+                const userData = photo.userData;
+
+                // Billboard: Always face camera
+                photo.quaternion.copy(this.camera.quaternion);
+
+                // Animate if needed
+                if (userData.animating) {
+                    userData.animationProgress += dt / (CONFIG.photoWall.animationDuration / 1000);
+                    
+                    if (userData.animationProgress >= 1) {
+                        userData.animationProgress = 1;
+                        userData.animating = false;
+
+                        if (userData.animationTarget.position) {
+                            photo.position.copy(userData.animationTarget.position);
+                        }
+                        if (userData.animationTarget.rotation) {
+                            photo.rotation.copy(userData.animationTarget.rotation);
+                        }
+                        if (userData.animationTarget.scale !== undefined) {
+                            photo.scale.setScalar(userData.animationTarget.scale);
+                        }
+                    } else {
+                        const t = userData.animationProgress;
+                        const eased = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+
+                        if (userData.animationTarget.position) {
+                            photo.position.lerpVectors(
+                                userData.originalPosition,
+                                userData.animationTarget.position,
+                                eased
+                            );
+                        }
+                        if (userData.animationTarget.scale !== undefined) {
+                            const startScale = 1;
+                            const newScale = startScale + (userData.animationTarget.scale - startScale) * eased;
+                            photo.scale.setScalar(newScale);
+                        }
+                    }
+                }
+
+                // Gentle floating animation (only when not selected/animating)
+                if (!this.selectedPhoto && !userData.animating) {
+                    const floatOffset = Math.sin(time * CONFIG.photoWall.floatSpeed + userData.floatPhase) * CONFIG.photoWall.floatAmplitude;
+                    photo.position.y = userData.originalPosition.y + floatOffset;
+                }
+            });
         }
-        else {
-          this.oneHandOpenSince = 0;
-          this.twoHandOpenSince = 0;
-          this.oneHandOpenStable = false;
-          this.twoHandOpenStable = false;
-        }
-      }
 
-      updatePhotoHoverFromHand() {
-        if (!this.photoEnabled || this.selectedPhoto) return;
+        animate() {
+            requestAnimationFrame(this.animate.bind(this));
+            const time = performance.now() * 0.001;
+            this.sharedUniforms.uTime.value = time;
 
-        const ndcX = this.palmCenter.x * 2 - 1;
-        const ndcY = -(this.palmCenter.y * 2 - 1);
+            this.detectGesture();
 
-        this.raycaster.setFromCamera({ x: ndcX, y: ndcY }, this.camera);
-        const intersects = this.raycaster.intersectObjects(this.photos, false);
-        const newHovered = intersects.length > 0 ? intersects[0].object : null;
-
-        if (newHovered !== this.hoveredPhoto) {
-          if (this.hoveredPhoto) this.hoveredPhoto.userData.border.material.opacity = 0;
-          if (newHovered) newHovered.userData.border.material.opacity = CONFIG.photoWall.hoverOpacity;
-          this.hoveredPhoto = newHovered;
-        }
-      }
-
-      updatePinchGesture(landmarks, now) {
-        const { pinchStableMs, pinchReleaseMs } = CONFIG.photoWall;
-        const isPinchingNow = this.detectPinch(landmarks);
-
-        if (isPinchingNow) {
-          if (!this.pinchSince) this.pinchSince = now;
-          else if (now - this.pinchSince >= pinchStableMs && !this.pinchLocked) {
-            if (this.hoveredPhoto && !this.selectedPhoto) {
-              this.selectPhoto(this.hoveredPhoto);
-              this.pinchLocked = true;
+            if (this.snowHoldTimer > 0) {
+                this.snowHoldTimer -= 16;
+                if (this.snowHoldTimer <= 0) {
+                    this.snowHoldTimer = 0;
+                    if (!this.manualSnowToggle) {
+                        this.snowEnabled = false;
+                    }
+                }
             }
-          }
-          this.pinchReleaseSince = 0;
-        } else {
-          if (this.pinchLocked) {
-            if (!this.pinchReleaseSince) this.pinchReleaseSince = now;
-            else if (now - this.pinchReleaseSince >= pinchReleaseMs) {
-              if (this.selectedPhoto) this.exitSelectedPhoto();
-              this.pinchLocked = false;
-            }
-          }
-          this.pinchSince = 0;
-        }
 
-        if (this.selectedPhoto && this.trackingLostSince && now - this.trackingLostSince >= CONFIG.photoWall.trackingLostMs) {
-          this.exitSelectedPhoto();
-        }
-      }
+            this.expandCurrent += (this.expandTarget - this.expandCurrent) * CONFIG.expand.lerpSpeed;
+            this.sharedUniforms.uExpand.value = this.expandCurrent;
 
-      // [SELECT] hide others + strict center (camera forward)
-      selectPhoto(photo) {
-        if (this.selectedPhoto) return;
+            // [PHOTO WALL - VISIBILITY GATE] Control photo visibility
+            // Show if: expanded AND (space held OR one hand open) AND NOT two hands open
+            const shouldShowPhotos = this.expandCurrent > 0.5 && 
+                                     (this.spaceHeld || this.oneHandOpenStable) && 
+                                     !this.twoHandOpenStable;
 
-        this.selectedPhoto = photo;
-        this.hoveredPhoto = null;
-
-        // 只显示选中的这一张
-        this.photos.forEach(p => { p.visible = (p === photo); });
-
-        const forward = new THREE.Vector3();
-        this.camera.getWorldDirection(forward);
-        const distance = 7.5;
-        const targetPos = this.camera.position.clone().add(forward.multiplyScalar(distance));
-
-        const fov = this.camera.fov * Math.PI / 180;
-        const screenHeight = 2 * Math.tan(fov / 2) * distance;
-        const targetHeight = screenHeight * 0.42;
-        const targetScale = targetHeight / CONFIG.photoWall.photoSize;
-
-        photo.userData.animating = true;
-        photo.userData.animationProgress = 0;
-        photo.userData.animationTarget = { position: targetPos, scale: targetScale };
-
-        // 纯白 + 不透明（避免发灰）
-        photo.material.color.setHex(0xffffff);
-        photo.material.opacity = 1.0;
-
-        photo.userData.border.material.opacity = CONFIG.photoWall.selectedOpacity;
-        photo.userData.border.scale.set(
-          CONFIG.photoWall.selectedBorderScale,
-          CONFIG.photoWall.selectedBorderScale,
-          1
-        );
-      }
-
-      exitSelectedPhoto() {
-        if (!this.selectedPhoto) return;
-
-        const photo = this.selectedPhoto;
-
-        // 恢复所有照片可见
-        this.photos.forEach(p => { p.visible = true; });
-
-        photo.userData.animating = true;
-        photo.userData.animationProgress = 0;
-        photo.userData.animationTarget = {
-          position: photo.userData.originalPosition.clone(),
-          rotation: photo.userData.originalRotation.clone(),
-          scale: 1
-        };
-
-        photo.material.color.setHex(0xffffff);
-        photo.material.opacity = 1.0;
-
-        photo.userData.border.material.opacity = 0;
-        photo.userData.border.scale.set(1, 1, 1);
-
-        this.selectedPhoto = null;
-        this.pinchLocked = false;
-      }
-
-      applyGesture(gesture) {
-        this.unlockMusicOnce();
-        this.currentGesture = gesture;
-
-        if (gesture === 'open') {
-          this.gestureExpandTarget = 1;
-          if (!this.keys.space) this.expandTarget = 1;
-        } else if (gesture === 'fist') {
-          this.gestureExpandTarget = 0;
-          if (!this.keys.space) this.expandTarget = 0;
-
-          if (this.photoEnabled) {
-            this.photoEnabled = false;
-            this.photoGroup.visible = false;
-            if (this.selectedPhoto) this.exitSelectedPhoto();
-          }
-        } else if (gesture === 'dual-open') {
-          if (!this.manualSnowToggle) {
-            this.snowEnabled = true;
-            this.snowHoldTimer = CONFIG.gesture.snowHoldDuration;
-          }
-        }
-      }
-
-      updateHUD() {
-        const hud = document.getElementById('hud');
-        const expandPct = Math.round(this.expandCurrent * 100);
-        const snowStatus = this.snowEnabled ? 'ON' : 'OFF';
-        const musicStatus = this.musicPlaying ? 'Playing' : 'Muted';
-        let photoStatus = 'Off';
-        if (this.selectedPhoto) photoStatus = 'Selected';
-        else if (this.hoveredPhoto) photoStatus = 'Hover';
-        else if (this.photoEnabled) photoStatus = 'Visible';
-
-        hud.innerHTML = `
-Hands: ${this.handsDetected} • Gesture: ${this.currentGesture}<br>
-Expand: ${expandPct}% • Snow: ${snowStatus} • Music: ${musicStatus}<br>
-Photo: ${photoStatus}<br><br>
-<strong>Controls:</strong><br>
-Space (hold) = Expand + Photos<br>
-Y = Toggle Snow<br>
-<strong>Photo Select:</strong><br>
-• Mouse: Space+hover+click to select,<br>
-  click again to exit<br>
-• Gesture: One hand open → hover palm<br>
-  → pinch (thumb+index) to select,<br>
-  release pinch to exit
-        `.trim();
-      }
-
-      updateSnow(dt) {
-        const { yMin, yMax, fadeInSpeed, fadeOutSpeed, baseOpacity } = CONFIG.snow;
-        const targetOpacity = this.snowEnabled ? baseOpacity : 0;
-        const fadeSpeed = this.snowEnabled ? fadeInSpeed : fadeOutSpeed;
-
-        this.snowOpacity += (targetOpacity - this.snowOpacity) * fadeSpeed;
-        this.snowPoints.material.opacity = this.snowOpacity;
-
-        if (this.snowOpacity > 0.01) {
-          const positions = this.snowPoints.geometry.attributes.position.array;
-
-          for (let i = 0; i < this.snowVelocities.length; i++) {
-            const vel = this.snowVelocities[i];
-            const idx = i * 3;
-
-            positions[idx] += vel.vx * dt;
-            positions[idx + 1] += vel.vy * dt;
-
-            if (positions[idx + 1] < yMin) {
-              positions[idx + 1] = yMax;
-              positions[idx] = (Math.random() - 0.5) * 40;
-              positions[idx + 2] = (Math.random() - 0.5) * 40;
-            }
-          }
-
-          this.snowPoints.geometry.attributes.position.needsUpdate = true;
-        }
-      }
-
-      updatePhotos(dt) {
-        const time = performance.now() * 0.001;
-
-        if (this.spaceHeld && this.photoEnabled && !this.selectedPhoto) {
-          this.raycaster.setFromCamera(this.mouse, this.camera);
-          const intersects = this.raycaster.intersectObjects(this.photos, false);
-          const newHovered = intersects.length > 0 ? intersects[0].object : null;
-
-          if (newHovered !== this.hoveredPhoto) {
-            if (this.hoveredPhoto) this.hoveredPhoto.userData.border.material.opacity = 0;
-            if (newHovered) newHovered.userData.border.material.opacity = CONFIG.photoWall.hoverOpacity;
-            this.hoveredPhoto = newHovered;
-          }
-        }
-
-        this.photos.forEach(photo => {
-          const userData = photo.userData;
-
-          // Billboard: always face camera
-          photo.quaternion.copy(this.camera.quaternion);
-
-          // Animate
-          if (userData.animating) {
-            userData.animationProgress += dt / (CONFIG.photoWall.animationDuration / 1000);
-
-            if (userData.animationProgress >= 1) {
-              userData.animationProgress = 1;
-              userData.animating = false;
-
-              if (userData.animationTarget.position) photo.position.copy(userData.animationTarget.position);
-              if (userData.animationTarget.rotation) photo.rotation.copy(userData.animationTarget.rotation);
-              if (userData.animationTarget.scale !== undefined) photo.scale.setScalar(userData.animationTarget.scale);
+            if (shouldShowPhotos) {
+                if (!this.photoGroup.visible) {
+                    this.photoEnabled = true;
+                    this.photoGroup.visible = true;
+                }
             } else {
-              const t = userData.animationProgress;
-              const eased = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
-
-              if (userData.animationTarget.position) {
-                photo.position.lerpVectors(userData.originalPosition, userData.animationTarget.position, eased);
-              }
-              if (userData.animationTarget.scale !== undefined) {
-                const startScale = 1;
-                const newScale = startScale + (userData.animationTarget.scale - startScale) * eased;
-                photo.scale.setScalar(newScale);
-              }
+                if (this.photoGroup.visible) {
+                    this.photoEnabled = false;
+                    this.photoGroup.visible = false;
+                    if (this.selectedPhoto) {
+                        this.exitSelectedPhoto();
+                    }
+                }
             }
-          }
 
-          // Float (only when not selected/animating)
-          if (!this.selectedPhoto && !userData.animating) {
-            const floatOffset = Math.sin(time * CONFIG.photoWall.floatSpeed + userData.floatPhase) * CONFIG.photoWall.floatAmplitude;
-            photo.position.y = userData.originalPosition.y + floatOffset;
-          }
-        });
+            const rot = CONFIG.treeSpeed;
+            this.scene.children.forEach(child => { 
+                if(child.type === 'Points' && child !== this.snowPoints) child.rotation.y += rot; 
+            });
+            this.spiralRotationAccumulator -= CONFIG.rotationMultiplier * rot;
+            this.sharedUniforms.uSpiralRotation.value = this.spiralRotationAccumulator;
 
-        // [HAND CURSOR]
-        this.updateHandCursor();
-      }
+            this.updateSnow(0.016);
+            this.updatePhotos(0.016);
+            this.updateHUD();
 
-      updateHandCursor() {
-        const shouldShowCursor =
-          this.photoEnabled &&
-          this.oneHandOpenStable &&
-          !this.twoHandOpenStable &&
-          !this.selectedPhoto;
-
-        if (!this.handCursor || !this.handCursorTrailPoints) return;
-
-        if (!shouldShowCursor) {
-          this.handCursor.visible = false;
-          this.handCursorTrailPoints.visible = false;
-          this.handCursorTrail = [];
-          return;
+            this.camera.layers.set(BLOOM_SCENE);
+            this.bloomComposer.render();
+            this.camera.layers.set(ENTIRE_SCENE);
+            this.finalComposer.render();
         }
-
-        const ndcX = this.palmCenter.x * 2 - 1;
-        const ndcY = -(this.palmCenter.y * 2 - 1);
-
-        this.raycaster.setFromCamera({ x: ndcX, y: ndcY }, this.camera);
-
-        const plane = new THREE.Plane(new THREE.Vector3(0, 0, -1), -CONFIG.photoWall.planeZ);
-        const hit = new THREE.Vector3();
-        const ok = this.raycaster.ray.intersectPlane(plane, hit);
-
-        if (!ok) {
-          this.handCursor.visible = false;
-          this.handCursorTrailPoints.visible = false;
-          this.handCursorTrail = [];
-          return;
-        }
-
-        this.handCursor.position.copy(hit);
-        this.handCursor.visible = true;
-
-        this.handCursorTrail.unshift(hit.clone());
-        if (this.handCursorTrail.length > 8) this.handCursorTrail.pop();
-
-        const arr = this.handCursorTrailPoints.geometry.attributes.position.array;
-        for (let i = 0; i < 8; i++) {
-          const p = this.handCursorTrail[i] || hit;
-          arr[i * 3 + 0] = p.x;
-          arr[i * 3 + 1] = p.y;
-          arr[i * 3 + 2] = p.z;
-        }
-        this.handCursorTrailPoints.geometry.attributes.position.needsUpdate = true;
-        this.handCursorTrailPoints.visible = true;
-      }
-
-      animate() {
-        requestAnimationFrame(this.animate.bind(this));
-        const time = performance.now() * 0.001;
-        this.sharedUniforms.uTime.value = time;
-
-        this.detectGesture();
-
-        if (this.snowHoldTimer > 0) {
-          this.snowHoldTimer -= 16;
-          if (this.snowHoldTimer <= 0) {
-            this.snowHoldTimer = 0;
-            if (!this.manualSnowToggle) this.snowEnabled = false;
-          }
-        }
-
-        this.expandCurrent += (this.expandTarget - this.expandCurrent) * CONFIG.expand.lerpSpeed;
-        this.sharedUniforms.uExpand.value = this.expandCurrent;
-
-        // show photos if: expanded AND (space held OR one hand open) AND NOT two hands open
-        const shouldShowPhotos =
-          this.expandCurrent > 0.5 &&
-          (this.spaceHeld || this.oneHandOpenStable) &&
-          !this.twoHandOpenStable;
-
-        if (shouldShowPhotos) {
-          if (!this.photoGroup.visible) {
-            this.photoEnabled = true;
-            this.photoGroup.visible = true;
-          }
-        } else {
-          if (this.photoGroup.visible) {
-            this.photoEnabled = false;
-            this.photoGroup.visible = false;
-            if (this.selectedPhoto) this.exitSelectedPhoto();
-          }
-        }
-
-        const rot = CONFIG.treeSpeed;
-        this.scene.children.forEach(child => {
-          if (child.type === 'Points' && child !== this.snowPoints) child.rotation.y += rot;
-        });
-        this.spiralRotationAccumulator -= CONFIG.rotationMultiplier * rot;
-        this.sharedUniforms.uSpiralRotation.value = this.spiralRotationAccumulator;
-
-        this.updateSnow(0.016);
-        this.updatePhotos(0.016);
-
-        // [BLOOM MIX] selected -> lower bloom mix
-        if (this.finalPass?.material?.uniforms?.uBloomMix) {
-          this.finalPass.material.uniforms.uBloomMix.value = this.selectedPhoto ? 0.35 : 0.65;
-        }
-
-        this.updateHUD();
-
-        this.camera.layers.set(BLOOM_SCENE);
-        this.bloomComposer.render();
-        this.camera.layers.set(ENTIRE_SCENE);
-        this.finalComposer.render();
-      }
     }
-
     new Installation();
-  </script>
+</script>
 </body>
 </html>
+```
