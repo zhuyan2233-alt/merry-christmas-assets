@@ -1246,7 +1246,7 @@ Y = Toggle Snow<br>
 
             // 根据选中状态调整 bloom 混合
             if (this.finalPass) {
-                const targetMix = this.selectedPhoto ? 0.04 : 0.60;
+                const targetMix = this.selectedPhoto ? 0.01 : 0.60;
                 this.finalPass.material.uniforms.uBloomMix.value = targetMix;
             }
 
