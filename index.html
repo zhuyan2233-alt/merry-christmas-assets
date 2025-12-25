@@ -30,7 +30,7 @@
             z-index: 5;
 
             font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial;
-            font-weight: 350;              /* 极细 */
+            font-weight: 300;              /* 极细 */
             font-size: 84px;               /* 克制 */
             letter-spacing: 0.12em;        /* 轻微字距 */
             color: rgba(252, 250, 255, 0.92);  /* 冷白略偏粉白 */
@@ -42,7 +42,7 @@
         }
 
         #merry.show {
-            animation: merryB 13.8s ease-in-out forwards; /* 总时长：淡入+停留+淡出 */
+            animation: merryB 9.6s ease-in-out forwards; /* 总时长：淡入+停留+淡出 */
         }
 
         @keyframes merryB {
@@ -1071,7 +1071,7 @@
             // 动画结束后移除 class，避免影响后续布局（但不会再次触发）
             setTimeout(() => {
                 this._merryEl.classList.remove('show');
-            }, 14000); // 略大于 4.6s
+            }, 10000); // 略大于 4.6s
         }
 
 
