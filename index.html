@@ -9,18 +9,53 @@
         canvas { display: block; }
         #hud {
             position: absolute;
-            top: 20px;
-            left: 20px;
-            background: rgba(0, 0, 0, 0.45);
-            color: #e0e0e0;
-            padding: 12px 16px;
-            border-radius: 6px;
-            font-family: 'Courier New', monospace;
-            font-size: 13px;
-            line-height: 1.6;
+            top: 18px;
+            left: 18px;
+            z-index: 10;
             pointer-events: none;
-            backdrop-filter: blur(4px);
+
+            /* Glassmorphism */
+            background: rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+
+            border-radius: 12px;
+            padding: 12px 14px;
+            width: 260px;
+
+            color: rgba(245, 245, 255, 0.88);
+            font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial;
+            font-size: 12px;
+            line-height: 1.55;
+            letter-spacing: 0.02em;
+
+            opacity: 0.85;
+            transition: opacity 600ms ease, transform 600ms ease;
         }
+
+        #hud.idle {
+            opacity: 0.22;                 /* 无交互时自动降低 */
+            transform: translateY(2px);
+        }
+
+        /* HUD 内部排版（轻量） */
+        #hud .row { display: flex; justify-content: space-between; gap: 10px; margin: 6px 0; }
+        #hud .label { opacity: 0.65; }
+        #hud .value { opacity: 0.95; }
+        #hud .divider { height: 1px; background: rgba(255,255,255,0.10); margin: 10px 0; }
+        #hud .tips { opacity: 0.70; font-size: 11px; line-height: 1.45; }
+        #hud kbd {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: 10.5px;
+            padding: 1px 6px;
+            border-radius: 999px;
+            background: rgba(0,0,0,0.20);
+            border: 1px solid rgba(255,255,255,0.10);
+            color: rgba(255,255,255,0.90);
+        }
+
         #merry {
             position: absolute;
             left: 50%;
@@ -289,6 +324,11 @@
                 this._merryEl = document.getElementById('merry');
 
                 this.keys = {};
+
+                this.uiLastActivityAt = performance.now();
+                this.uiIdleAfterMs = 3500;   // 3.5s 无交互 -> 进入 idle
+                this._hudEl = document.getElementById('hud');
+
                 
                 this.handsDetected = 0;
                 this.currentGesture = 'none';
@@ -778,6 +818,7 @@
                         this.expandTarget = 1;
                     }
                     this.unlockMusicOnce();
+                    this.markUIActivity();
                 }
                 if (e.code === 'KeyY' && !this.keys.y) {
                     this.keys.y = true;
@@ -791,9 +832,11 @@
                         }
                     }
                     this.unlockMusicOnce();
+                    this.markUIActivity();
                 }
                 if (e.code === 'Escape' && this.selectedPhoto) {
                     this.exitSelectedPhoto();
+                    this.markUIActivity();
                 }
             });
 
@@ -828,10 +871,12 @@
             window.addEventListener('mousemove', (e) => {
                 this.mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
                 this.mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+                this.markUIActivity();
             });
 
             window.addEventListener('click', (e) => {
                 this.handleMouseClick(e);
+                this.markUIActivity();
             });
 
             window.addEventListener('resize', () => {
@@ -923,6 +968,7 @@
             
             this.handsDetected = results.landmarks ? results.landmarks.length : 0;
 
+            if (this.handsDetected > 0) this.markUIActivity();
 
             let detectedGesture = 'none';
             if (this.handsDetected === 1) {
@@ -1086,28 +1132,57 @@
         }
 
 
-        updateHUD() {
-    const hud = document.getElementById('hud');
-    const expandPct = Math.round(this.expandCurrent * 100);
-    const snowStatus = this.snowEnabled ? 'ON' : 'OFF';
-    const musicStatus = this.musicPlaying ? 'Playing' : 'Muted';
-    let photoStatus = 'Off';
-    if (this.selectedPhoto) photoStatus = 'Selected';
-    else if (this.hoveredPhoto) photoStatus = 'Hover';
-    else if (this.photoEnabled) photoStatus = 'Visible';
 
-    hud.innerHTML = `
-Hands: ${this.handsDetected} • Gesture: ${this.currentGesture}<br>
-Expand: ${expandPct}% • Snow: ${snowStatus} • Music: ${musicStatus}<br>
-Photo: ${photoStatus}<br><br>
-<strong>Controls:</strong><br>
-Space (hold) = Expand + Photos<br>
-Y = Toggle Snow<br>
-<strong>Photo Select:</strong><br>
-- Mouse: Space+hover+click to select,<br>
-  click again to exit<br>
-    `.trim();
-}
+        markUIActivity() {
+            this.uiLastActivityAt = performance.now();
+        }
+
+        updateUIIdleState(now) {
+            if (!this._hudEl) return;
+            const idle = (now - this.uiLastActivityAt) > this.uiIdleAfterMs;
+            this._hudEl.classList.toggle('idle', idle);
+        }
+
+        updateHUD() {
+            const hud = this._hudEl || document.getElementById('hud');
+            if (!hud) return;
+
+            const treeStatus = (this.expandCurrent > 0.5) ? 'Expanded' : 'Collapsed';
+            const snowStatus = this.snowEnabled ? 'On' : 'Off';
+            const musicStatus = this.musicPlaying ? 'Playing' : 'Muted';
+            const photoStatus = this.photoEnabled ? (this.selectedPhoto ? 'Selected' : 'On') : 'Off';
+
+            hud.innerHTML = `
+                <div class="row">
+                    <div class="label">Tree</div><div class="value">${treeStatus}</div>
+                </div>
+                <div class="row">
+                    <div class="label">Snow</div><div class="value">${snowStatus}</div>
+                </div>
+                <div class="row">
+                    <div class="label">Music</div><div class="value">${musicStatus}</div>
+                </div>
+                <div class="row">
+                    <div class="label">Photo</div><div class="value">${photoStatus}</div>
+                </div>
+
+                <div class="divider"></div>
+
+                <div class="tips">
+                    <div><span class="label">Gesture:</span> <span class="value">1 hand open → Expand + Photos</span></div>
+                    <div><span class="label">Gesture:</span> <span class="value">2 hands open → Snow</span></div>
+                    <div><span class="label">Gesture:</span> <span class="value">Fist → Collapse</span></div>
+                    <div style="margin-top:6px;">
+                        <span class="label">Keyboard:</span>
+                        <kbd>Space</kbd> hold · <kbd>Y</kbd> snow · <kbd>Esc</kbd> exit
+                    </div>
+                    <div style="margin-top:4px;">
+                        <span class="label">Mouse:</span> <span class="value">Space + hover + click to select</span>
+                    </div>
+                </div>
+            `.trim();
+        }
+
 
         updateSnow(dt) {
             const { yMin, yMax, fadeInSpeed, fadeOutSpeed, baseOpacity } = CONFIG.snow;
@@ -1277,6 +1352,7 @@ Y = Toggle Snow<br>
             }
 
             this.updateHUD();
+            this.updateUIIdleState(performance.now());
 
             this.camera.layers.set(BLOOM_SCENE);
             this.bloomComposer.render();
