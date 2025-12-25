@@ -123,11 +123,7 @@
                 oneHandStableMs: 180,
                 twoHandStableMs: 220,
                 dualLockMs: 600,
-                oneHandCooldownMs: 300,
-                pinchThreshold: 0.28,
-                pinchStableMs: 200,
-                pinchReleaseMs: 120,
-                trackingLostMs: 250
+                oneHandCooldownMs: 300
             }
         };
 
@@ -265,20 +261,6 @@
                 this.mouse = new THREE.Vector2();
                 this.raycaster = new THREE.Raycaster();
                 
-                // [PHOTO WALL] Hand gesture state for photos
-                this.palmCenter = new THREE.Vector3();
-                this.palmNormal = new THREE.Vector3();
-                this.oneHandOpenStable = false;
-                this.twoHandOpenStable = false;
-                this.oneHandOpenSince = 0;
-                this.twoHandOpenSince = 0;
-                this.dualLockUntil = 0;
-                this.oneHandLastTriggered = 0;
-                this.isPinching = false;
-                this.pinchSince = 0;
-                this.pinchReleaseSince = 0;
-                this.pinchLocked = false;
-                this.trackingLostSince = 0;
 
                 this.initScene();
                 this.initStructures();
@@ -869,58 +851,6 @@
             return 'none';
         }
 
-        calculatePalmGeometry(landmarks) {
-            const wrist = landmarks[0];
-            const indexMcp = landmarks[5];
-            const pinkyMcp = landmarks[17];
-
-            this.palmCenter.set(
-                (wrist.x + indexMcp.x + pinkyMcp.x) / 3,
-                (wrist.y + indexMcp.y + pinkyMcp.y) / 3,
-                (wrist.z + indexMcp.z + pinkyMcp.z) / 3
-            );
-
-            const v1x = indexMcp.x - wrist.x;
-            const v1y = indexMcp.y - wrist.y;
-            const v1z = indexMcp.z - wrist.z;
-
-            const v2x = pinkyMcp.x - wrist.x;
-            const v2y = pinkyMcp.y - wrist.y;
-            const v2z = pinkyMcp.z - wrist.z;
-
-            const nx = v1y * v2z - v1z * v2y;
-            const ny = v1z * v2x - v1x * v2z;
-            const nz = v1x * v2y - v1y * v2x;
-
-            const len = Math.sqrt(nx * nx + ny * ny + nz * nz);
-            if (len > 0.0001) {
-                this.palmNormal.set(nx / len, ny / len, nz / len);
-            } else {
-                this.palmNormal.set(0, -1, 0);
-            }
-        }
-
-        detectPinch(landmarks) {
-            const thumbTip = landmarks[4];
-            const indexTip = landmarks[8];
-            const indexMcp = landmarks[5];
-            const pinkyMcp = landmarks[17];
-
-            const palmWidth = Math.sqrt(
-                Math.pow(indexMcp.x - pinkyMcp.x, 2) +
-                Math.pow(indexMcp.y - pinkyMcp.y, 2) +
-                Math.pow(indexMcp.z - pinkyMcp.z, 2)
-            );
-
-            const pinchDist = Math.sqrt(
-                Math.pow(thumbTip.x - indexTip.x, 2) +
-                Math.pow(thumbTip.y - indexTip.y, 2) +
-                Math.pow(thumbTip.z - indexTip.z, 2)
-            );
-
-            const normalizedDist = pinchDist / (palmWidth + 0.001);
-            return normalizedDist < CONFIG.photoWall.pinchThreshold;
-        }
 
         detectGesture() {
             if (!this.handLandmarker || this.video.readyState !== 4) return;
@@ -1030,12 +960,6 @@
                         this.oneHandLastTriggered = now;
                     }
                 }
-
-                if (this.photoEnabled && firstOpenHand) {
-                    this.calculatePalmGeometry(firstOpenHand);
-                    this.updatePhotoHoverFromHand();
-                    this.updatePinchGesture(firstOpenHand, now);
-                }
             } 
             else {
                 this.oneHandOpenSince = 0;
@@ -1045,62 +969,6 @@
             }
         }
 
-        // [PHOTO WALL - HAND RAYCAST NDC] Update photo hover using NDC-based raycasting
-        updatePhotoHoverFromHand() {
-            if (!this.photoEnabled || this.selectedPhoto) return;
-
-            // Convert palm center to NDC coordinates
-            const ndcX = this.palmCenter.x * 2 - 1;
-            const ndcY = -(this.palmCenter.y * 2 - 1);
-
-            this.raycaster.setFromCamera({ x: ndcX, y: ndcY }, this.camera);
-            const intersects = this.raycaster.intersectObjects(this.photos, false);
-
-            const newHovered = intersects.length > 0 ? intersects[0].object : null;
-
-            if (newHovered !== this.hoveredPhoto) {
-                if (this.hoveredPhoto) {
-                    this.hoveredPhoto.userData.border.material.opacity = 0;
-                }
-                if (newHovered) {
-                    newHovered.userData.border.material.opacity = CONFIG.photoWall.hoverOpacity;
-                }
-                this.hoveredPhoto = newHovered;
-            }
-        }
-
-        updatePinchGesture(landmarks, now) {
-            const { pinchStableMs, pinchReleaseMs } = CONFIG.photoWall;
-            const isPinchingNow = this.detectPinch(landmarks);
-
-            if (isPinchingNow) {
-                if (!this.pinchSince) {
-                    this.pinchSince = now;
-                } else if (now - this.pinchSince >= pinchStableMs && !this.pinchLocked) {
-                    if (this.hoveredPhoto && !this.selectedPhoto) {
-                        this.selectPhoto(this.hoveredPhoto);
-                        this.pinchLocked = true;
-                    }
-                }
-                this.pinchReleaseSince = 0;
-            } else {
-                if (this.pinchLocked) {
-                    if (!this.pinchReleaseSince) {
-                        this.pinchReleaseSince = now;
-                    } else if (now - this.pinchReleaseSince >= pinchReleaseMs) {
-                        if (this.selectedPhoto) {
-                            this.exitSelectedPhoto();
-                        }
-                        this.pinchLocked = false;
-                    }
-                }
-                this.pinchSince = 0;
-            }
-
-            if (this.selectedPhoto && this.trackingLostSince && now - this.trackingLostSince >= CONFIG.photoWall.trackingLostMs) {
-                this.exitSelectedPhoto();
-            }
-        }
 
         // [PHOTO WALL - SELECT BRIGHTNESS] Select photo with sparkle-level brightness
         selectPhoto(photo) {
@@ -1221,9 +1089,6 @@ Y = Toggle Snow<br>
 <strong>Photo Select:</strong><br>
 - Mouse: Space+hover+click to select,<br>
   click again to exit<br>
-- Gesture: One hand open → hover palm<br>
-  → pinch (thumb+index) to select,<br>
-  release pinch to exit
     `.trim();
 }
 
