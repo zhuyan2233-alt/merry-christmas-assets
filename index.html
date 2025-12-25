@@ -105,17 +105,17 @@
                 planeZ: 11,
                 centerY: 5.2,
                 spreadX: 3.0,
-                spreadY: 2.0,
+                spreadY: 3.0,
                 jitter: 0.35,
-                minSpacing: 1.9,
-                photoSize: 1.8,
+                minSpacing: 3.0,
+                photoSize: 2.0,
                 hoverBorderScale: 1.12,
                 selectedBorderScale: 1.15,
                 hoverOpacity: 0.35,
                 selectedOpacity: 0.65,
-                normalColor: 0xcccccc,
-                normalOpacity: 0.88,
-                selectedColor: 0xF2F6FF,
+                normalColor: 0xffffff,
+                normalOpacity: 1.0,
+                selectedColor: 0xffffff,
                 selectedOpacityValue: 1.0,
                 animationDuration: 700,
                 floatAmplitude: 0.08,
@@ -612,14 +612,29 @@
 
                 const finalPass = new ShaderPass(
                     new THREE.ShaderMaterial({
-                        uniforms: { baseTexture: { value: null }, bloomTexture: { value: this.bloomComposer.renderTarget2.texture } },
+                        uniforms: { 
+                            baseTexture: { value: null }, 
+                            bloomTexture: { value: this.bloomComposer.renderTarget2.texture },
+                            uBloomMix: { value: 0.65 }
+                        },
                         vertexShader: `varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
-                        fragmentShader: `uniform sampler2D baseTexture; uniform sampler2D bloomTexture; varying vec2 vUv; void main() { gl_FragColor = texture2D(baseTexture, vUv) + texture2D(bloomTexture, vUv) * 0.65; }`
+                        fragmentShader: `
+                            uniform sampler2D baseTexture; 
+                            uniform sampler2D bloomTexture; 
+                            uniform float uBloomMix;
+                            varying vec2 vUv; 
+                            void main() { 
+                                gl_FragColor = texture2D(baseTexture, vUv) + texture2D(bloomTexture, vUv) * uBloomMix; 
+                            }
+                        `
                     }), "baseTexture"
                 );
                 this.finalComposer = new EffectComposer(this.renderer);
-            this.finalComposer.addPass(renderPass);
-            this.finalComposer.addPass(finalPass);
+                this.finalComposer.addPass(renderPass);
+                this.finalComposer.addPass(finalPass);
+
+                // 存储 finalPass 引用以便后续修改 uBloomMix
+                this.finalPass = finalPass;
         }
 
         initMusic() {
@@ -744,8 +759,23 @@
                 if (e.code === 'Space') {
                     this.keys.space = false;
                     this.spaceHeld = false;
-                    if (!this.photoEnabled) {
-                        this.expandTarget = this.gestureExpandTarget;
+                    
+                    // 无条件回树
+                    this.expandTarget = this.gestureExpandTarget;
+                    
+                    // 立刻隐藏照片墙
+                    this.photoEnabled = false;
+                    this.photoGroup.visible = false;
+                    
+                    // 如果有选中，退出
+                    if (this.selectedPhoto) {
+                        this.exitSelectedPhoto();
+                    }
+                    
+                    // 清除 hover 状态
+                    if (this.hoveredPhoto) {
+                        this.hoveredPhoto.userData.border.material.opacity = 0;
+                        this.hoveredPhoto = null;
                     }
                 }
                 if (e.code === 'KeyY') {
@@ -1079,12 +1109,20 @@
             this.selectedPhoto = photo;
             this.hoveredPhoto = null;
 
-            const targetZ = 15;
-            const targetPos = new THREE.Vector3(0, 5, targetZ);
+            // 隐藏其他照片
+            this.photos.forEach(p => {
+                p.visible = (p === photo);
+            });
+
+            // 计算屏幕严格正中位置
+            const forward = new THREE.Vector3();
+            this.camera.getWorldDirection(forward);
+            const distance = 7.5;
+            const targetPos = this.camera.position.clone().add(forward.multiplyScalar(distance));
 
             const fov = this.camera.fov * Math.PI / 180;
-            const screenHeight = 2 * Math.tan(fov / 2) * (this.camera.position.z - targetZ);
-            const targetHeight = screenHeight * (5 / 12);
+            const screenHeight = 2 * Math.tan(fov / 2) * distance;
+            const targetHeight = screenHeight * 0.42;
             const targetScale = targetHeight / CONFIG.photoWall.photoSize;
 
             photo.userData.animating = true;
@@ -1094,11 +1132,10 @@
                 scale: targetScale
             };
 
-            // Enhance brightness to sparkle-level (2/3 of sparkle brightness)
-            photo.material.color.setHex(CONFIG.photoWall.selectedColor);
-            photo.material.opacity = CONFIG.photoWall.selectedOpacityValue;
+            // 纯白不透明
+            photo.material.color.setHex(0xffffff);
+            photo.material.opacity = 1.0;
 
-            // Update border for selected state
             photo.userData.border.material.opacity = CONFIG.photoWall.selectedOpacity;
             photo.userData.border.scale.set(
                 CONFIG.photoWall.selectedBorderScale,
@@ -1111,6 +1148,12 @@
             if (!this.selectedPhoto) return;
 
             const photo = this.selectedPhoto;
+            
+            // 恢复所有照片可见
+            this.photos.forEach(p => {
+                p.visible = true;
+            });
+            
             photo.userData.animating = true;
             photo.userData.animationProgress = 0;
             photo.userData.animationTarget = {
@@ -1119,11 +1162,9 @@
                 scale: 1
             };
 
-            // Restore normal brightness
-            photo.material.color.setHex(CONFIG.photoWall.normalColor);
-            photo.material.opacity = CONFIG.photoWall.normalOpacity;
+            photo.material.color.setHex(0xffffff);
+            photo.material.opacity = 1.0;
 
-            // Reset border
             photo.userData.border.material.opacity = 0;
             photo.userData.border.scale.set(1, 1, 1);
 
@@ -1161,17 +1202,30 @@
         }
 
         updateHUD() {
-            const hud = document.getElementById('hud');
-            const expandPct = Math.round(this.expandCurrent * 100);
-            const snowStatus = this.snowEnabled ? 'ON' : 'OFF';
-            const musicStatus = this.musicPlaying ? 'Playing' : 'Muted';
-            let photoStatus = 'Off';
-            if (this.selectedPhoto) photoStatus = 'Selected';
-            else if (this.hoveredPhoto) photoStatus = 'Hover';
-            else if (this.photoEnabled) photoStatus = 'Visible';
+    const hud = document.getElementById('hud');
+    const expandPct = Math.round(this.expandCurrent * 100);
+    const snowStatus = this.snowEnabled ? 'ON' : 'OFF';
+    const musicStatus = this.musicPlaying ? 'Playing' : 'Muted';
+    let photoStatus = 'Off';
+    if (this.selectedPhoto) photoStatus = 'Selected';
+    else if (this.hoveredPhoto) photoStatus = 'Hover';
+    else if (this.photoEnabled) photoStatus = 'Visible';
 
-            hud.innerHTML = `Hands detected: ${this.handsDetected}<br>Gesture: ${this.currentGesture}<br>Expand: ${expandPct}%<br>Snow: ${snowStatus}<br>Music: ${musicStatus}<br>Photo: ${photoStatus}<br><br>Help: Space=Expand(hold) â€¢ Y=Snow toggle`;
-        }
+    hud.innerHTML = `
+Hands: ${this.handsDetected} • Gesture: ${this.currentGesture}<br>
+Expand: ${expandPct}% • Snow: ${snowStatus} • Music: ${musicStatus}<br>
+Photo: ${photoStatus}<br><br>
+<strong>Controls:</strong><br>
+Space (hold) = Expand + Photos<br>
+Y = Toggle Snow<br>
+<strong>Photo Select:</strong><br>
+- Mouse: Space+hover+click to select,<br>
+  click again to exit<br>
+- Gesture: One hand open → hover palm<br>
+  → pinch (thumb+index) to select,<br>
+  release pinch to exit
+    `.trim();
+}
 
         updateSnow(dt) {
             const { yMin, yMax, fadeInSpeed, fadeOutSpeed, baseOpacity } = CONFIG.snow;
@@ -1324,6 +1378,13 @@
 
             this.updateSnow(0.016);
             this.updatePhotos(0.016);
+
+            // 根据选中状态调整 bloom 混合
+            if (this.finalPass) {
+                const targetMix = this.selectedPhoto ? 0.35 : 0.65;
+                this.finalPass.material.uniforms.uBloomMix.value = targetMix;
+            }
+
             this.updateHUD();
 
             this.camera.layers.set(BLOOM_SCENE);
